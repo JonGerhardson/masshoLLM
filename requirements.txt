@@ -1,0 +1,13 @@
+pandas
+pyyaml
+requests
+beautifulsoup4
+google-generativeai
+pypdf
+trafilatura
+dateparser
+cloudscraper
+fake_useragent
+python-docx
+openpyxl
+xlrd

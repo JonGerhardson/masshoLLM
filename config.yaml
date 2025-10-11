@@ -1,0 +1,49 @@
+# --- Database Settings ---
+database_settings:
+  database_file: "massgov_updates.db"
+
+# --- Agent Settings ---
+agent_settings:
+  # Base URL format for the daily CSV files on GitHub.
+  # The {date} placeholder will be filled with the YYYY-MM-DD for yesterday.
+  github_csv_url_format: "https://raw.githubusercontent.com/JonGerhardson/massgovupdates/main/daily_updates/{date}.csv"
+  
+  # How many days back a page's date can be to be considered "new".
+  # 2 means yesterday and the day before are considered new.
+  recency_threshold_days: 2
+
+  # --- NEW: Rate Limiting ---
+  # Base delay in seconds between processing each URL.
+  # A jitter of +/- 50% is automatically added to make requests less robotic.
+  # A value of 1 means the delay will be between 0.5 and 1.5 seconds.
+  request_delay_seconds: 1
+
+# --- LLM Settings ---
+llm_settings:
+  # The provider to use for summaries. Options: "gemini", "openrouter", "lmstudio"
+  provider: "gemini"
+
+  # The maximum number of characters to send to the LLM from the scraped content.
+  character_limit: 8000
+
+  # API keys for the different services.
+  # IMPORTANT: Replace "YOUR_..." with your actual keys.
+  api_keys:
+    gemini: "YOUR_GEMINI_API_KEY"
+    openrouter: "YOUR_OPENROUTER_API_KEY"
+    
+  # Endpoints for the services.
+  endpoints:
+    openrouter: "https://openrouter.ai/api/v1/chat/completions"
+    lmstudio: "http://localhost:1234/v1/chat/completions"
+    
+  # Specific models to use for each provider.
+  models:
+    # Example: "gemini-1.5-flash-latest"
+    gemini: "gemini-2.5-flash-lite" 
+    # Example: "google/gemini-flash-1.5"
+    openrouter: "google/gemini-flash-1.5" 
+    # This must match the model you have loaded in LMStudio.
+    lmstudio: "local-model"
+
+
