@@ -3,27 +3,55 @@ import logging
 import dateparser
 import pypdf
 import io
-import docx
 import pandas as pd
+import xlrd # For .xls files
 from bs4 import BeautifulSoup
 from trafilatura import extract
-from typing import Optional
-from datetime import datetime
+from typing import Optional, Dict, Any
+from datetime import datetime, timedelta
+
+# --- New Imports for Robustness ---
 import cloudscraper
 from fake_useragent import UserAgent
 
+# --- Logging Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# --- Custom Exception for 403 Errors ---
+class Scraper403Error(Exception):
+    """Custom exception for 403 Forbidden errors to handle them specifically."""
+    pass
+
+# --- Global UserAgent Instance ---
 ua = UserAgent()
 
 def create_session_with_retries() -> requests.Session:
-    """Creates a cloudscraper session object."""
-    return cloudscraper.create_scraper()
+    """Creates a cloudscraper session object with more robust headers to bypass anti-bot measures."""
+    session = cloudscraper.create_scraper()
+    # --- UPGRADE: Add a more comprehensive set of default headers to the session ---
+    session.headers.update({
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Cache-Control': 'max-age=0',
+    })
+    return session
 
 def fetch_page(session: requests.Session, url: str) -> Optional[str]:
-    """Fetches the HTML content of a given URL."""
+    """Fetches the HTML content of a given URL using a robust session object."""
     try:
-        headers = {'User-Agent': ua.random}
+        # --- UPGRADE: Add a Referer header to make the request look more natural ---
+        headers = {
+            'User-Agent': ua.random,
+            'Referer': 'https://www.mass.gov/'
+        }
         response = session.get(url, headers=headers, timeout=20)
+        
+        if response.status_code == 403:
+            raise Scraper403Error(f"403 Forbidden error for URL: {url}")
+            
         response.raise_for_status()
         return response.text
     except requests.exceptions.RequestException as e:
@@ -40,22 +68,20 @@ def extract_download_page_date(html: str) -> Optional[datetime]:
             if next_td:
                 date_span = next_td.find('span', class_='ma__listing-table__data-item')
                 if date_span:
-                    date_str = date_span.get_text(strip=True)
-                    return dateparser.parse(date_str)
+                    return dateparser.parse(date_span.get_text(strip=True))
         
         last_updated_dt = soup.find('dt', string=lambda t: t and "last updated on" in t.lower())
         if last_updated_dt:
             last_updated_dd = last_updated_dt.find_next_sibling('dd')
             if last_updated_dd:
-                date_str = last_updated_dd.get_text(strip=True)
-                return dateparser.parse(date_str)
+                return dateparser.parse(last_updated_dd.get_text(strip=True))
         return None
     except Exception as e:
         logging.error(f"Error parsing date from download page: {e}")
         return None
 
 def find_best_date_on_page(html: str) -> Optional[datetime]:
-    """Tries to find any plausible date from a standard HTML page."""
+    """Tries to find any plausible date from a standard HTML page using multiple methods."""
     try:
         soup = BeautifulSoup(html, 'html.parser')
         meta_tag = soup.find('meta', property='article:published_time')
@@ -68,13 +94,11 @@ def find_best_date_on_page(html: str) -> Optional[datetime]:
             
         date_span = soup.find('span', class_='ma-page-header__published-date')
         if date_span:
-            date_text = date_span.get_text(strip=True).replace("Published on ", "")
-            return dateparser.parse(date_text)
+            return dateparser.parse(date_span.get_text(strip=True).replace("Published on ", ""))
             
         time_tag = soup.find('time', attrs={'datetime': True})
         if time_tag:
             return dateparser.parse(time_tag['datetime'])
-            
         return None
     except Exception as e:
         logging.error(f"Error finding a generic date on page: {e}")
@@ -84,103 +108,72 @@ def extract_article_content(html: str) -> Optional[str]:
     """Uses 'trafilatura' to extract main article content."""
     return extract(html, include_comments=False, include_tables=False)
 
-def download_and_extract_document_text(session: requests.Session, url: str) -> Optional[str]:
+def download_and_extract_document_text(session: requests.Session, url: str) -> Dict[str, Optional[str]]:
     """
-    Downloads a file from a URL and extracts text.
-    Handles PDF, DOCX, XLSX, XLS, and CSV file types by inspecting the file's "magic numbers".
+    Downloads a file, identifies its type based on content, and extracts all text from it.
+    This function is now only called for supported file types.
     """
     try:
-        headers = {'User-Agent': ua.random}
+        # --- UPGRADE: Add a Referer header to the download request as well ---
+        headers = {
+            'User-Agent': ua.random,
+            'Referer': 'https://www.mass.gov/'
+            }
         response = session.get(url, headers=headers, timeout=30)
-        response.raise_for_status()
         
+        if response.status_code == 403:
+            raise Scraper403Error(f"403 Forbidden error for URL: {url}")
+            
+        response.raise_for_status()
         content_bytes = response.content
         file_stream = io.BytesIO(content_bytes)
 
-        # Check for different file types using their unique starting bytes ("magic numbers")
-        if content_bytes.startswith(b'%PDF'):
-            try:
-                pdf_reader = pypdf.PdfReader(file_stream)
-                text = "".join(page.extract_text() or "" for page in pdf_reader.pages)
-                if text.strip():
-                    logging.info(f"Successfully extracted text from PDF: {url}")
-                    return text.strip()
-            except Exception as e:
-                 logging.error(f"File appeared to be a PDF but failed to parse: {e}")
-                 return None
+        # Identify file type by magic number for accuracy
+        magic_number = content_bytes[:4]
+        text = None
+        file_type = "Unknown"
 
-        elif content_bytes.startswith(b'PK\x03\x04'):  # ZIP archive (DOCX or XLSX)
-            logging.info(f"File at {url} is a ZIP-based format (DOCX or XLSX).")
+        if magic_number == b'%PDF':
+            file_type = "PDF"
+            pdf_reader = pypdf.PdfReader(file_stream)
+            text = "".join(page.extract_text() or "" for page in pdf_reader.pages)
+        elif magic_number == b'PK\x03\x04': # ZIP archive (DOCX, XLSX)
             try:
-                document = docx.Document(file_stream)
-                text = "\n".join(para.text for para in document.paragraphs)
-                if text.strip():
-                    logging.info(f"Successfully extracted text from DOCX: {url}")
-                    return text.strip()
+                file_type = "XLSX"
+                df = pd.read_excel(file_stream, sheet_name=None, engine='openpyxl')
+                text = "\n\n".join(f"Sheet: {name}\n{sheet.to_string()}" for name, sheet in df.items())
             except Exception:
-                logging.warning(f"Could not read as DOCX. Attempting to read as XLSX.")
-                file_stream.seek(0)
                 try:
-                    df = pd.read_excel(file_stream, engine='openpyxl')
-                    text = df.to_string()
-                    if text.strip():
-                        logging.info(f"Successfully extracted text from XLSX: {url}")
-                        return text.strip()
-                except Exception as xlsx_error:
-                    logging.error(f"File was ZIP-based but failed as DOCX and XLSX: {xlsx_error}")
-                    return None
-        
-        elif content_bytes.startswith(b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1'): # Legacy XLS file
-            logging.info(f"File at {url} identified as a legacy XLS file.")
+                    import docx
+                    file_type = "DOCX"
+                    doc = docx.Document(file_stream)
+                    text = "\n".join([para.text for para in doc.paragraphs])
+                except Exception as e:
+                    logging.warning(f"File at {url} is a ZIP archive but not a readable XLSX or DOCX: {e}")
+        elif magic_number == b'\xd0\xcf\x11\xe0': # Legacy XLS file
+             file_type = "XLS"
+             workbook = xlrd.open_workbook(file_contents=content_bytes)
+             text = ""
+             for sheet in workbook.sheets():
+                 text += f"Sheet: {sheet.name}\n"
+                 for row_idx in range(sheet.nrows):
+                     text += "\t".join(str(cell.value) for cell in sheet.row(row_idx)) + "\n"
+        else: # Fallback to CSV/plain text
             try:
-                df = pd.read_excel(file_stream, engine='xlrd')
-                text = df.to_string()
-                if text.strip():
-                    logging.info(f"Successfully extracted text from XLS: {url}")
-                    return text.strip()
-            except Exception as xls_error:
-                logging.error(f"Could not read file as XLS: {xls_error}")
-                return None
+                file_type = "CSV"
+                text = pd.read_csv(file_stream).to_string()
+            except Exception as e:
+                logging.error(f"Could not read file as CSV: {e}")
 
-        else:  # Fallback: Assume a text-based format like CSV
-            logging.info(f"File at {url} not PDF/ZIP/XLS. Attempting to read as CSV.")
-            try:
-                try:
-                    csv_text = content_bytes.decode('utf-8')
-                except UnicodeDecodeError:
-                    csv_text = content_bytes.decode('latin-1')
-                
-                df = pd.read_csv(io.StringIO(csv_text))
-                text = df.to_string()
-                if text.strip():
-                    logging.info(f"Successfully extracted text from CSV: {url}")
-                    return text.strip()
-            except Exception as csv_error:
-                logging.error(f"Could not read file as CSV: {csv_error}")
-                return None
+        return {"content_for_llm": text.strip() if text else None, "filetype": file_type}
 
-        logging.warning(f"Could not extract any text from the document at {url}")
-        return None
-
+    except pypdf.errors.PdfReadError:
+        logging.warning(f"File at {url} appears to be a PDF but is unreadable.")
+        return {"content_for_llm": None, "filetype": "PDF (unreadable)"}
     except requests.exceptions.RequestException as e:
         logging.error(f"Failed to download file from {url}: {e}")
-        return None
+        return {"content_for_llm": None, "filetype": "Download Failed"}
     except Exception as e:
-        logging.error(f"An unexpected error occurred during file processing for {url}: {e}")
-        return None
-
-
-# --- Self-Contained Testing Block ---
-if __name__ == '__main__':
-    session = create_session_with_retries()
-    
-    # Test XLS
-    test_xls = "https://www.mass.gov/doc/abcc-active-retail-licenses/download"
-    print(f"\n--- Testing Document File Download (XLS): {test_xls} ---")
-    xls_text = download_and_extract_document_text(session, test_xls)
-    if xls_text:
-        print(f"✅ SUCCESS: Extracted text (length: {len(xls_text)} chars).")
-    else:
-        print("❌ FAILURE: Could not process the document.")
-
+        logging.error(f"An unexpected error occurred during file processing for {url}: {e}", exc_info=True)
+        return {"content_for_llm": None, "filetype": "Processing Error"}
 
