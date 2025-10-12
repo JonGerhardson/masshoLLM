@@ -1,166 +1,120 @@
-# database.py
 import sqlite3
-from sqlite3 import Error
 import logging
-from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import List, Dict, Any, Optional
 
 # --- Logging Setup ---
-# It's good practice to log database operations and potential errors.
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def _sanitize_table_name(table_name: str) -> str:
-    """
-    Sanitizes a string to be a safe SQL table name to prevent SQL injection.
-    A simple approach is to replace dashes with underscores and ensure it's a valid identifier.
-    """
-    return "".join(c if c.isalnum() or c == '_' else '_' for c in table_name)
+    """Sanitizes a table name to prevent SQL injection."""
+    return "".join(c for c in table_name if c.isalnum() or c == '_')
 
 def create_connection(db_file: str) -> Optional[sqlite3.Connection]:
-    """
-    Create a database connection to the SQLite database specified by db_file.
-    
-    Args:
-        db_file (str): The path to the SQLite database file.
-        
-    Returns:
-        Optional[sqlite3.Connection]: Connection object or None if an error occurs.
-    """
+    """Create a database connection to a SQLite database."""
     conn = None
     try:
         conn = sqlite3.connect(db_file)
         logging.info(f"Successfully connected to SQLite database: {db_file}")
         return conn
-    except Error as e:
-        logging.error(f"Error connecting to database {db_file}: {e}")
-        return None
+    except sqlite3.Error as e:
+        logging.error(f"Error connecting to database: {e}")
+    return None
 
-def create_daily_table(conn: sqlite3.Connection, table_name: str) -> None:
-    """
-    Create a table for a specific day's data if it doesn't already exist.
-
-    Args:
-        conn (sqlite3.Connection): The database connection object.
-        table_name (str): The name for the new table (e.g., 'massgov_2025_10_11').
-    """
+def create_daily_table(conn: sqlite3.Connection, table_name: str):
+    """Creates a new table for the daily run if it doesn't exist."""
     sanitized_table_name = _sanitize_table_name(table_name)
-
-    create_table_sql = f"""
+    # Schema now includes the 'extracted_text' column for the retry feature.
+    sql_create_table = f"""
     CREATE TABLE IF NOT EXISTS {sanitized_table_name} (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id INTEGER PRIMARY KEY,
         url TEXT NOT NULL UNIQUE,
         lastmodified TEXT,
         filetype TEXT,
         page_date TEXT,
-        is_new TEXT CHECK(is_new IN ('yes', 'no', 'maybe')),
+        is_new TEXT,
+        category TEXT,
         summary TEXT,
-        processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        extracted_text TEXT 
     );
     """
     try:
-        cursor = conn.cursor()
-        cursor.execute(create_table_sql)
-        conn.commit()
-        logging.info(f"Table '{sanitized_table_name}' is ready.")
-    except Error as e:
-        logging.error(f"Error creating table '{sanitized_table_name}': {e}")
+        c = conn.cursor()
+        c.execute(sql_create_table)
+    except sqlite3.Error as e:
+        logging.error(f"Error creating table {sanitized_table_name}: {e}")
 
 def check_if_url_exists(conn: sqlite3.Connection, table_name: str, url: str) -> bool:
-    """
-    Check if a URL has already been processed and inserted into the daily table.
-    
-    Args:
-        conn (sqlite3.Connection): The database connection object.
-        table_name (str): The name of the table to check.
-        url (str): The URL to look for.
-        
-    Returns:
-        bool: True if the URL exists, False otherwise.
-    """
+    """Checks if a URL already exists in the specified table."""
     sanitized_table_name = _sanitize_table_name(table_name)
-    sql = f"SELECT id FROM {sanitized_table_name} WHERE url = ?"
-    
-    try:
-        cursor = conn.cursor()
-        cursor.execute(sql, (url,))
-        data = cursor.fetchone()
-        return data is not None
-    except Error as e:
-        logging.error(f"Error checking URL '{url}' in table '{sanitized_table_name}': {e}")
-        return False # Assume it doesn't exist if an error occurs to allow processing attempt.
+    sql = f'SELECT id FROM {sanitized_table_name} WHERE url = ?'
+    cur = conn.cursor()
+    cur.execute(sql, (url,))
+    data = cur.fetchone()
+    return data is not None
 
-def insert_record(conn: sqlite3.Connection, table_name: str, record_data: Dict[str, Any]) -> Optional[int]:
-    """
-    Insert a new record into the specified daily table.
-    
-    Args:
-        conn (sqlite3.Connection): The database connection object.
-        table_name (str): The name of the table to insert into.
-        record_data (Dict[str, Any]): A dictionary containing the data for the new record.
-                                     Keys should match the column names.
-    
-    Returns:
-        Optional[int]: The ID of the newly inserted row, or None if insertion fails.
-    """
+def insert_record(conn: sqlite3.Connection, table_name: str, record_data: Dict[str, Any]):
+    """Inserts a single processed record into the database."""
     sanitized_table_name = _sanitize_table_name(table_name)
-    
-    sql = f''' INSERT INTO {sanitized_table_name}(url, lastmodified, filetype, page_date, is_new, summary)
-               VALUES(?,?,?,?,?,?) '''
-               
-    # Prepare tuple of values in the correct order for the SQL statement
-    values = (
-        record_data.get('url'),
-        record_data.get('lastmodified'),
-        record_data.get('filetype'),
-        record_data.get('page_date'),
-        record_data.get('is_new'),
-        record_data.get('summary')
-    )
-
+    # Updated SQL statement to include the new 'extracted_text' column.
+    sql = f''' INSERT INTO {sanitized_table_name}(url, lastmodified, filetype, page_date, is_new, category, summary, extracted_text)
+               VALUES(?,?,?,?,?,?,?,?) '''
+    cur = conn.cursor()
     try:
-        cursor = conn.cursor()
-        cursor.execute(sql, values)
+        cur.execute(sql, (
+            record_data['url'],
+            record_data['lastmodified'],
+            record_data['filetype'],
+            record_data['page_date'],
+            record_data['is_new'],
+            record_data.get('category'),
+            record_data['summary'],
+            record_data.get('extracted_text') # Add extracted_text to the insert tuple
+        ))
         conn.commit()
-        logging.info(f"Successfully inserted record for URL: {record_data.get('url')}")
-        return cursor.lastrowid
-    except Error as e:
-        logging.error(f"Error inserting record for URL '{record_data.get('url')}': {e}")
-        return None
+    except sqlite3.IntegrityError:
+        logging.warning(f"URL already exists in database, skipping insert: {record_data['url']}")
+    except sqlite3.Error as e:
+        logging.error(f"Error inserting record for URL {record_data['url']}: {e}")
 
-# --- Example Usage (for testing this module directly) ---
-if __name__ == '__main__':
-    db_file = "massgov_updates_test.db"
-    
-    # Get today's date to generate the table name, e.g., 'massgov_2025_10_11'
-    today_str = datetime.now().strftime("%Y_%m_%d")
-    table_name = f"massgov_{today_str}"
+def fetch_new_and_maybe_records(conn: sqlite3.Connection, table_name: str) -> List[Dict[str, Any]]:
+    """Fetches all records marked as 'yes' or 'maybe' for reporting."""
+    sanitized_table_name = _sanitize_table_name(table_name)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    try:
+        cur.execute(f"SELECT * FROM {sanitized_table_name} WHERE is_new IN ('yes', 'maybe')")
+        rows = cur.fetchall()
+        return [dict(row) for row in rows]
+    except sqlite3.Error as e:
+        logging.error(f"Could not fetch records for report from table {sanitized_table_name}: {e}")
+        return []
 
-    # 1. Create a database connection
-    connection = create_connection(db_file)
+# --- NEW FUNCTION for --retry_llm feature ---
+def fetch_records_for_llm_retry(conn: sqlite3.Connection, table_name: str) -> List[Dict[str, Any]]:
+    """Fetches records that have stored text but failed LLM processing."""
+    sanitized_table_name = _sanitize_table_name(table_name)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    try:
+        # Fetches records where the text was extracted but the LLM failed (API Error) or wasn't run.
+        sql = f"SELECT id, url, extracted_text, is_new FROM {sanitized_table_name} WHERE extracted_text IS NOT NULL AND (category IN ('API Error', 'Processing Error', 'Parse Error') OR summary IS NULL)"
+        cur.execute(sql)
+        rows = cur.fetchall()
+        logging.info(f"Found {len(rows)} records to retry for LLM processing.")
+        return [dict(row) for row in rows]
+    except sqlite3.Error as e:
+        logging.error(f"Could not fetch records for LLM retry from table {sanitized_table_name}: {e}")
+        return []
 
-    if connection:
-        # 2. Create the daily table
-        create_daily_table(connection, table_name)
-
-        # 3. Example record to insert
-        example_record = {
-            'url': 'https://www.mass.gov/doc/test-document/download',
-            'lastmodified': '2025-10-10T12:00:00Z',
-            'filetype': 'PDF',
-            'page_date': '2025-10-10',
-            'is_new': 'yes',
-            'summary': 'This is a test summary of the document.'
-        }
-        
-        # 4. Check if the record already exists before inserting
-        if not check_if_url_exists(connection, table_name, example_record['url']):
-            # 5. Insert the record
-            insert_record(connection, table_name, example_record)
-        else:
-            print(f"URL '{example_record['url']}' already exists in the database. Skipping.")
-
-        # Close the connection
-        connection.close()
-        print("Database operations complete and connection closed.")
-
+# --- NEW FUNCTION for --retry_llm feature ---
+def update_llm_results(conn: sqlite3.Connection, table_name: str, record_id: int, category: str, summary: str):
+    """Updates a record with new category and summary from a successful LLM call."""
+    sanitized_table_name = _sanitize_table_name(table_name)
+    sql = f"UPDATE {sanitized_table_name} SET category = ?, summary = ? WHERE id = ?"
+    cur = conn.cursor()
+    try:
+        cur.execute(sql, (category, summary, record_id))
+        conn.commit()
+    except sqlite3.Error as e:
+        logging.error(f"Failed to update record ID {record_id} with LLM results: {e}")
 
