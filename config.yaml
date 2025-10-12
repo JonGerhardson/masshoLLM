@@ -5,45 +5,42 @@ database_settings:
 # --- Agent Settings ---
 agent_settings:
   # Base URL format for the daily CSV files on GitHub.
-  # The {date} placeholder will be filled with the YYYY-MM-DD for yesterday.
+  # The {date} placeholder will be replaced with the correct YYYY-MM-DD string.
   github_csv_url_format: "https://raw.githubusercontent.com/JonGerhardson/massgovupdates/main/daily_updates/{date}.csv"
   
-  # How many days back a page's date can be to be considered "new".
+  # How many days back to consider a page "new".
   # 2 means yesterday and the day before are considered new.
   recency_threshold_days: 2
+  
+  # --- Rate Limiting to avoid being blocked ---
+  # The agent will wait a random amount of time between these two values (in seconds)
+  # before making each web request to mass.gov.
+  rate_limit_min: 1.0
+  rate_limit_max: 3.0
 
-  # --- NEW: Rate Limiting ---
-  # Base delay in seconds between processing each URL.
-  # A jitter of +/- 50% is automatically added to make requests less robotic.
-  # A value of 1 means the delay will be between 0.5 and 1.5 seconds.
-  request_delay_seconds: 1
-
-# --- LLM Settings ---
+# --- LLM Provider Settings ---
 llm_settings:
-  # The provider to use for summaries. Options: "gemini", "openrouter", "lmstudio"
+  # Choose your provider: "gemini", "openrouter", or "lmstudio"
   provider: "gemini"
 
-  # The maximum number of characters to send to the LLM from the scraped content.
+  # Maximum number of characters to send to the LLM from any document.
   character_limit: 8000
 
-  # API keys for the different services.
-  # IMPORTANT: Replace "YOUR_..." with your actual keys.
+  # --- API Keys ---
+  # For Gemini, you can also set the GEMINI_API_KEY environment variable.
   api_keys:
     gemini: "YOUR_GEMINI_API_KEY"
     openrouter: "YOUR_OPENROUTER_API_KEY"
-    
-  # Endpoints for the services.
+
+  # --- Endpoints for OpenAI-compatible APIs ---
   endpoints:
     openrouter: "https://openrouter.ai/api/v1/chat/completions"
     lmstudio: "http://localhost:1234/v1/chat/completions"
     
-  # Specific models to use for each provider.
+  # --- Model Selection ---
+  # Specify the exact model identifier for each service.
   models:
-    # Example: "gemini-1.5-flash-latest"
-    gemini: "gemini-2.5-flash-lite" 
-    # Example: "google/gemini-flash-1.5"
-    openrouter: "google/gemini-flash-1.5" 
-    # This must match the model you have loaded in LMStudio.
-    lmstudio: "local-model"
-
+    gemini: 'gemini-2.0-flash'
+    openrouter: 'google/gemini-2.5-flash'
+    lmstudio: 'qwen3-4b-128k'
 
