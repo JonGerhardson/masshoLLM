@@ -18,8 +18,11 @@ Git
 **1. Clone the Repository**
 
 ```
-git clone [https://github.com/your-username/masshoLLm.git](https://github.com/your-username/masshoLLM.git)
-cd masshoLLM```
+git clone https://github.com/your-username/masshoLLM.git
+```
+```
+cd masshoLLM
+```
 
 **2. Install Dependencies**
 
