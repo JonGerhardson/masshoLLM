@@ -18,7 +18,7 @@ Git
 **1. Clone the Repository**
 
 ```
-git clone https://github.com/your-username/masshoLLM.git
+git clone https://github.com/JonGerhardson/masshoLLM.git
 ```
 ```
 cd masshoLLM
