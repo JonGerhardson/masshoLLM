@@ -18,9 +18,8 @@ Git
 **1. Clone the Repository**
 
 ```
-git clone [https://github.com/your-username/massgov-agent.git](https://github.com/your-username/massgov-agent.git)
-cd massgov-agent
-```
+git clone [https://github.com/your-username/masshoLLm.git](https://github.com/your-username/masshoLLM.git)
+cd masshoLLM```
 
 **2. Install Dependencies**
 
