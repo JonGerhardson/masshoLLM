@@ -5,9 +5,10 @@ import pypdf
 import io
 import pandas as pd
 import xlrd # For .xls files
+import json
 from bs4 import BeautifulSoup
 from trafilatura import extract
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
 
 # --- New Imports for Robustness ---
@@ -176,4 +177,28 @@ def download_and_extract_document_text(session: requests.Session, url: str) -> D
     except Exception as e:
         logging.error(f"An unexpected error occurred during file processing for {url}: {e}", exc_info=True)
         return {"content_for_llm": None, "filetype": "Processing Error"}
+
+def fetch_press_releases(session: requests.Session) -> List[Dict[str, Any]]:
+    """Fetches the latest press releases from the Mass.gov news API."""
+    url = "https://www.mass.gov/api/v1/news"
+    logging.info(f"Fetching press releases from {url}")
+    try:
+        headers = {
+            'User-Agent': ua.random,
+            'Accept': 'application/json'
+        }
+        response = session.get(url, headers=headers, timeout=20)
+        response.raise_for_status()
+        data = response.json()
+        if isinstance(data, list):
+            return data
+        else:
+            logging.error("Press release API response is not in the expected list format.")
+            return []
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Error fetching press releases from API: {e}")
+        return []
+    except json.JSONDecodeError as e:
+        logging.error(f"Error decoding JSON from press release API: {e}")
+        return []
 
