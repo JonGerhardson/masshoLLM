@@ -52,6 +52,24 @@ def get_pseudo_batch_prompt():
     """
     return prompt
 
+def get_summary_only_prompt():
+    """Generates a system prompt for the LLM to only summarize content, not categorize it."""
+    return (
+        "You are an automated text processing service for a news organization. "
+        "You will be given a series of documents, each identified by a unique URL. "
+        "Your task is to process ALL documents provided and return a single, valid JSON array as your response. "
+        "Do not include any text, pleasantries, or markdown formatting before or after the JSON array.\n\n"
+        "For each document:\n"
+        "1. Write a concise, neutral, two-sentence summary suitable for a news lead.\n"
+        "2. Base your summary *only* on the text provided for that document.\n\n"
+        "The format for each object in the JSON array MUST be:\n"
+        '{\n'
+        '  "url": "The original URL of the document",\n'
+        '  "summary": "Your two-sentence summary."\n'
+        '}'
+    )
+
+
 _config = None
 def _load_config():
     """Loads and caches the config.yaml file."""
@@ -103,8 +121,34 @@ def _parse_json_response(response_text: str, original_urls: List[str]) -> Dict[s
         llm_logger.debug(f"Malformed JSON string: {json_str}")
         return {url: {"category": "API Error", "summary": f"Malformed JSON response from LLM: {e}"} for url in original_urls}
 
-def _call_gemini_pseudo_batch(batch: List[Dict[str, Any]], api_key: str, model_name: str) -> Dict[str, Dict[str, str]]:
-    """Handles a single 'pseudo-batch' API call to Google Gemini for a subset of documents."""
+def _parse_summary_only_json_response(response_text: str, original_urls: List[str]) -> Dict[str, str]:
+    """Extracts and parses a summary-only JSON array from the LLM's response."""
+    llm_logger = logging.getLogger('llm')
+    
+    match = re.search(r'```json\s*(\[.*\])\s*```|(\[.*\])', response_text, re.DOTALL)
+    if not match:
+        llm_logger.error("Could not find a JSON array in the summary-only response.")
+        return {url: "API Error: No JSON array found." for url in original_urls}
+
+    json_str = next((g for g in match.groups() if g is not None), None)
+
+    try:
+        parsed_data = json.loads(json_str)
+        if not isinstance(parsed_data, list):
+            raise json.JSONDecodeError("JSON is not a list.", json_str, 0)
+        
+        results = {item.get("url"): item.get("summary", "No summary provided.") for item in parsed_data if item.get("url")}
+        
+        for url in original_urls:
+            if url not in results:
+                results[url] = "API Error: LLM did not return an entry for this URL."
+        return results
+    except json.JSONDecodeError as e:
+        llm_logger.error(f"Failed to decode summary-only JSON: {e}")
+        return {url: "API Error: Malformed JSON response." for url in original_urls}
+
+def _call_gemini_pseudo_batch(batch: List[Dict[str, Any]], api_key: str, model_name: str, master_prompt: str, parser_func: callable) -> Dict[str, Any]:
+    """Handles a single generic 'pseudo-batch' API call to Google Gemini."""
     llm_logger = logging.getLogger('llm')
     original_urls = [item['url'] for item in batch]
 
@@ -112,12 +156,11 @@ def _call_gemini_pseudo_batch(batch: List[Dict[str, Any]], api_key: str, model_n
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(model_name)
         
-        master_prompt = get_pseudo_batch_prompt()
-        
         content_block = []
         for item in batch:
-            doc_type = 'yes' if not item['is_maybe'] else 'maybe'
-            content_header = f"--- DOCUMENT URL: {item['url']} TYPE: {doc_type} ---"
+            # For the original prompt, include the type. For others, just the URL.
+            doc_type_str = f" TYPE: {'yes' if not item.get('is_maybe') else 'maybe'}" if 'is_maybe' in item else ""
+            content_header = f"--- DOCUMENT URL: {item['url']}{doc_type_str} ---"
             item_full_text = f"{content_header}\n{item['content']}"
             content_block.append(item_full_text)
 
@@ -126,28 +169,59 @@ def _call_gemini_pseudo_batch(batch: List[Dict[str, Any]], api_key: str, model_n
         
         llm_logger.debug(f"--- GEMINI PSEUDO-BATCH REQUEST ({len(batch)} docs) ---")
         
-        generation_config = { "max_output_tokens": 8192 }
+        generation_config = {"max_output_tokens": 8192}
         
-        response = model.generate_content(
-            full_prompt,
-            generation_config=generation_config
-        )
-        
+        response = model.generate_content(full_prompt, generation_config=generation_config)
         response_text = response.text.strip()
         
         llm_logger.debug(f"--- GEMINI PSEUDO-BATCH RESPONSE ---\n{response_text}\n--------------------")
 
-        return _parse_json_response(response_text, original_urls)
+        return parser_func(response_text, original_urls)
 
     except Exception as e:
         logging.error(f"Fatal error during Gemini pseudo-batch API call: {e}")
         llm_logger.error(f"Fatal error calling Gemini API: {e}", exc_info=True)
-        return {url: {"category": "API Error", "summary": str(e)} for url in original_urls}
+        # Adjust error format based on the expected parser output
+        if parser_func == _parse_summary_only_json_response:
+             return {url: f"API Error: {e}" for url in original_urls}
+        else:
+             return {url: {"category": "API Error", "summary": str(e)} for url in original_urls}
+
 
 def get_batch_summaries(batch: List[Dict[str, Any]]) -> Dict[str, Dict[str, str]]:
     """
-    Generates summaries for a batch of content using the configured LLM provider.
-    Splits the main batch into smaller chunks to avoid API response size limits.
+    Generates summaries AND categories for sitemap items.
+    """
+    try:
+        config = _load_config()['llm_settings']
+    except (TypeError, KeyError):
+        logging.error("LLM settings are missing or malformed in config.yaml.")
+        return {}
+        
+    api_key = os.environ.get("GEMINI_API_KEY") or config.get('api_keys', {}).get('gemini')
+    model_name = config.get('models', {}).get('gemini', 'gemini-2.5-flash')
+    
+    if not api_key or "YOUR_" in api_key:
+        logging.error("Gemini API key is not configured.")
+        return {item['url']: {"category": "Config Error", "summary": "API key not configured."} for item in batch}
+
+    all_results = {}
+    chunk_size = 5 # Small chunk size for this complex prompt
+    total_chunks = math.ceil(len(batch) / chunk_size)
+
+    for i in range(0, len(batch), chunk_size):
+        sub_batch = batch[i:i + chunk_size]
+        chunk_num = (i // chunk_size) + 1
+        logging.info(f"Processing sitemap chunk {chunk_num}/{total_chunks}...")
+        results = _call_gemini_pseudo_batch(sub_batch, api_key, model_name, get_pseudo_batch_prompt(), _parse_json_response)
+        all_results.update(results)
+        if chunk_num < total_chunks:
+            time.sleep(2)
+    return all_results
+
+def get_press_release_summaries(batch: List[Dict[str, Any]]) -> Dict[str, str]:
+    """
+    Generates SUMMARIES ONLY for press release items.
     """
     try:
         config = _load_config()['llm_settings']
@@ -155,45 +229,23 @@ def get_batch_summaries(batch: List[Dict[str, Any]]) -> Dict[str, Dict[str, str]
         logging.error("LLM settings are missing or malformed in config.yaml.")
         return {}
 
-    provider = config.get('provider')
-    models = config.get('models', {})
+    api_key = os.environ.get("GEMINI_API_KEY") or config.get('api_keys', {}).get('gemini')
+    model_name = config.get('models', {}).get('gemini', 'gemini-2.5-flash')
     
-    if not batch:
-        return {}
+    if not api_key or "YOUR_" in api_key:
+        logging.error("Gemini API key is not configured.")
+        return {item['url']: "API key not configured." for item in batch}
 
-    logging.info(f"Requesting {len(batch)} summaries using provider: {provider} (Chunked Pseudo-Batch Mode)")
+    all_results = {}
+    chunk_size = 10 # Can use a larger chunk size for this simpler prompt
+    total_chunks = math.ceil(len(batch) / chunk_size)
 
-    if provider == "gemini":
-        api_key = os.environ.get("GEMINI_API_KEY") or config.get('api_keys', {}).get('gemini')
-        model_name = models.get('gemini', 'gemini-2.5-flash')
-        
-        if not api_key or "YOUR_" in api_key:
-            logging.error("Gemini API key is not configured.")
-            return {item['url']: {"category": "Config Error", "summary": "API key not configured."} for item in batch}
-
-        all_results = {}
-        max_requests = 10
-        chunk_size = max(1, math.ceil(len(batch) / max_requests))
-        total_chunks = math.ceil(len(batch) / chunk_size)
-
-        logging.info(f"Total batch of {len(batch)} will be split into {total_chunks} chunks of up to {chunk_size} documents each.")
-
-        for i in range(0, len(batch), chunk_size):
-            sub_batch = batch[i:i + chunk_size]
-            chunk_num = (i // chunk_size) + 1
-            
-            logging.info(f"Processing chunk {chunk_num}/{total_chunks} with {len(sub_batch)} documents.")
-            
-            results = _call_gemini_pseudo_batch(sub_batch, api_key, model_name)
-            all_results.update(results)
-            
-            if chunk_num < total_chunks:
-                logging.info("Waiting for 2 seconds before next API call...")
-                time.sleep(2)
-
-        return all_results
-
-    else:
-        logging.error(f"Provider '{provider}' is not configured for pseudo-batching. Aborting.")
-        return {item['url']: {"category": "Config Error", "summary": "Provider not configured for pseudo-batching."} for item in batch}
-
+    for i in range(0, len(batch), chunk_size):
+        sub_batch = batch[i:i + chunk_size]
+        chunk_num = (i // chunk_size) + 1
+        logging.info(f"Processing press release chunk {chunk_num}/{total_chunks}...")
+        results = _call_gemini_pseudo_batch(sub_batch, api_key, model_name, get_summary_only_prompt(), _parse_summary_only_json_response)
+        all_results.update(results)
+        if chunk_num < total_chunks:
+            time.sleep(2)
+    return all_results
