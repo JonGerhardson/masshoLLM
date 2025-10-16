@@ -60,9 +60,11 @@ def fetch_page(session: requests.Session, url: str) -> Optional[str]:
         return None
 
 def extract_download_page_date(html: str) -> Optional[datetime]:
-    """Parses the HTML of a /doc/ landing page to find the 'Last updated' date."""
+    """Parses the HTML of a /doc/ landing page to find the 'Last updated' or 'Date' field."""
     try:
         soup = BeautifulSoup(html, 'html.parser')
+        
+        # Check for "last updated" pattern
         last_updated_th = soup.find('th', scope="row", string=lambda t: t and "last updated" in t.lower())
         if last_updated_th:
             next_td = last_updated_th.find_next_sibling('td')
@@ -70,16 +72,28 @@ def extract_download_page_date(html: str) -> Optional[datetime]:
                 date_span = next_td.find('span', class_='ma__listing-table__data-item')
                 if date_span:
                     return dateparser.parse(date_span.get_text(strip=True))
+
+        # --- ADDED: Check for "Date:" pattern ---
+        date_th = soup.find('th', scope="row", string=lambda t: t and "date:" in t.lower())
+        if date_th:
+            next_td = date_th.find_next_sibling('td')
+            if next_td:
+                date_span = next_td.find('span', class_='ma__listing-table__data-item')
+                if date_span:
+                    return dateparser.parse(date_span.get_text(strip=True))
         
+        # Check for "last updated on" pattern
         last_updated_dt = soup.find('dt', string=lambda t: t and "last updated on" in t.lower())
         if last_updated_dt:
             last_updated_dd = last_updated_dt.find_next_sibling('dd')
             if last_updated_dd:
                 return dateparser.parse(last_updated_dd.get_text(strip=True))
+        
         return None
     except Exception as e:
         logging.error(f"Error parsing date from download page: {e}")
         return None
+
 
 def find_best_date_on_page(html: str) -> Optional[datetime]:
     """Tries to find any plausible date from a standard HTML page using multiple methods."""
@@ -201,4 +215,3 @@ def fetch_press_releases(session: requests.Session) -> List[Dict[str, Any]]:
     except json.JSONDecodeError as e:
         logging.error(f"Error decoding JSON from press release API: {e}")
         return []
-
