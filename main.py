@@ -5,6 +5,7 @@ import time
 import random
 import argparse
 import os
+import dateparser
 from datetime import datetime, timedelta
 
 # Import the custom modules we built
@@ -159,13 +160,37 @@ def submit_llm_batch(llm_batch: list, processed_records: list):
 
 def main():
     """Main function to run the AI agent."""
-    parser = argparse.ArgumentParser(description="Scrape and analyze mass.gov for news leads.")
-    parser.add_argument("--date", help="Specify a date to process in YYYY-MM-DD format. Defaults to yesterday.")
-    parser.add_argument("--test", action="store_true", help="Run in test mode: process first 25 URLs and use testing.db.")
-    parser.add_argument("--retry", nargs='?', const=True, default=False, 
-                        help="Run in scraping retry mode.")
-    # --- UPGRADE: Added new argument for the LLM retry feature. ---
-    parser.add_argument("--retry_llm", action="store_true", help="Re-run LLM analysis on records that previously failed.")
+    parser = argparse.ArgumentParser(
+        description="A command-line agent to scrape, analyze, and report on updates from mass.gov.",
+        formatter_class=argparse.RawTextHelpFormatter,
+        epilog="""
+Examples of use:
+  - Run for yesterday's date:
+    python main.py
+
+  - Run for a specific date:
+    python main.py --date 2025-10-14
+
+  - Run a quick test for a specific date's sitemap:
+    python main.py --date 2025-10-14 --test
+
+  - Update an existing run for a specific date with only the latest news API data:
+    python main.py --date 2025-10-14 --news-only
+"""
+    )
+
+    # Primary Operations
+    primary_group = parser.add_argument_group('Primary Operations')
+    primary_group.add_argument("--date", help="Specify a date to process in YYYY-MM-DD format. Defaults to yesterday.")
+
+    # Special Modes
+    mode_group = parser.add_argument_group('Special Modes (use one at a time with --date)')
+    mode_group.add_argument("--test", action="store_true", help="Run in test mode: process first 25 URLs and use testing.db.")
+    mode_group.add_argument("--retry", nargs='?', const=True, default=False, 
+                        help="Run in scraping retry mode for URLs that failed with a 403 error in a previous run.")
+    mode_group.add_argument("--retry_llm", action="store_true", help="Re-run LLM analysis on records that previously failed (e.g., due to API errors).")
+    mode_group.add_argument("--news-only", action="store_true", help="Only fetch data from the /news API to update a day's run, skipping the sitemap.")
+    
     args = parser.parse_args()
     
     config = load_config()
@@ -174,20 +199,25 @@ def main():
     
     if args.date:
         try:
-            datetime.strptime(args.date, "%Y-%m-%d")
+            target_date_obj = datetime.strptime(args.date, "%Y-%m-%d")
             csv_date_str = args.date
         except ValueError:
             logging.critical(f"Invalid date format: '{args.date}'. Please use YYYY-MM-DD.")
             return
     else:
-        if args.retry is True or args.retry_llm:
-            logging.critical("Retry modes require a specific date. Please use the --date flag.")
+        if args.retry is True or args.retry_llm or args.news_only:
+            logging.critical("Retry and news-only modes require a specific date. Please use the --date flag.")
             return
         yesterday = datetime.now() - timedelta(days=1)
+        target_date_obj = yesterday
         csv_date_str = yesterday.strftime("%Y-%m-%d")
 
     is_manual_retry = (args.retry is True)
     setup_main_logging(args.test, csv_date_str, is_manual_retry, args.retry_llm)
+
+    if args.news_only and (is_manual_retry or args.retry_llm):
+        logging.critical("--news-only cannot be used with --retry or --retry_llm modes.")
+        return
     
     table_name = f"massgov_{csv_date_str.replace('-', '_')}"
     db_filename = "testing.db" if args.test else db_config['database_file']
@@ -238,66 +268,150 @@ def main():
     logging.info("--- Starting Mass.gov News Lead Agent ---")
     if args.test: logging.info("--- RUNNING IN TEST MODE ---")
     if is_manual_retry: logging.info("--- RUNNING IN AGGRESSIVE RETRY MODE ---")
+    if args.news_only: logging.info("--- RUNNING IN NEWS-ONLY MODE ---")
+
 
     scraping_session = scraper.create_session_with_retries()
-    llm_batch = []
-    processed_records = []
-    recency_threshold = agent_config.get('recency_threshold_days', 2)
-
-    if is_manual_retry:
-        retry_log_file = os.path.join('logs', f"{csv_date_str}_retries.log")
-        # (This mode processes sequentially and is less likely to hit TPM limits, so we keep the end-of-run batch)
-        # ... retry logic ...
-    else: # Normal or Test run
-        csv_url = agent_config['github_csv_url_format'].format(date=csv_date_str)
-        try:
-            daily_df = pd.read_csv(csv_url, names=['loc', 'lastmod'], header=0)
-            if args.test: daily_df = daily_df.head(25)
-            logging.info(f"Loaded {len(daily_df)} URLs for processing.")
-        except Exception as e:
-            logging.error(f"Failed to fetch or read CSV from {csv_url}. Error: {e}")
-            if conn: conn.close()
-            return
-            
-        # --- UPGRADE: Logic for incremental batching. ---
-        total_urls = len(daily_df)
-        # Define checkpoints at 25%, 50%, and 75%
-        checkpoints = {int(total_urls * p) for p in [0.25, 0.5, 0.75]}
-
-        for index, row in daily_df.iterrows():
-            url, lastmodified = str(row['loc']).strip(), str(row['lastmod']).strip()
-
-            logging.info(f"Processing URL ({index + 1}/{total_urls}): {url}")
-            if database.check_if_url_exists(conn, table_name, url):
-                logging.warning(f"URL already processed. Skipping.")
-                continue
-
-            try:
-                time.sleep(random.uniform(agent_config['rate_limit_min'], agent_config['rate_limit_max']))
-                record_data, content_for_llm = process_url(scraping_session, url, lastmodified, recency_threshold)
-                if content_for_llm:
-                    llm_batch.append({'url': url, 'content': content_for_llm, 'is_maybe': record_data['is_new'] == 'maybe'})
-                processed_records.append(record_data)
-
-            except scraper.Scraper403Error:
-                logging.error(f"403 Forbidden error for {url}. Logging for retry.")
-                log_retry_url(url, csv_date_str)
-            except Exception as e:
-                logging.error(f"An unexpected error occurred while processing {url}: {e}", exc_info=True)
-
-            # --- UPGRADE: Check if we have reached a progress checkpoint. ---
-            if (index + 1) in checkpoints:
-                submit_llm_batch(llm_batch, processed_records)
-
-    # --- UPGRADE: Process the final batch after the loop completes. ---
-    # This handles the last 25% of items and any remaining items in manual retry mode.
-    submit_llm_batch(llm_batch, processed_records)
-
-    # (The logic for merging results is now inside submit_llm_batch, so we remove it from here)
     
-    for record in processed_records:
-        database.insert_record(conn, table_name, record)
-    logging.info(f"Completed processing. {len(processed_records)} records saved to the database.")
+    if not args.news_only:
+        logging.info("--- Processing URLs from Sitemap ---")
+        llm_batch = []
+        processed_records = []
+        recency_threshold = agent_config.get('recency_threshold_days', 2)
+
+        if is_manual_retry:
+            retry_log_file = os.path.join('logs', f"{csv_date_str}_retries.log")
+            # (This mode processes sequentially and is less likely to hit TPM limits, so we keep the end-of-run batch)
+            # ... retry logic ...
+        else: # Normal or Test run
+            csv_url = agent_config['github_csv_url_format'].format(date=csv_date_str)
+            try:
+                daily_df = pd.read_csv(csv_url, names=['loc', 'lastmod'], header=0)
+                if args.test: daily_df = daily_df.head(25)
+                logging.info(f"Loaded {len(daily_df)} URLs for processing from sitemap.")
+            except Exception as e:
+                logging.error(f"Failed to fetch or read CSV from {csv_url}. Error: {e}")
+                if conn: conn.close()
+                return
+                
+            # --- UPGRADE: Logic for incremental batching. ---
+            total_urls = len(daily_df)
+            # Define checkpoints at 25%, 50%, and 75%
+            checkpoints = {int(total_urls * p) for p in [0.25, 0.5, 0.75]}
+
+            for index, row in daily_df.iterrows():
+                url, lastmodified = str(row['loc']).strip(), str(row['lastmod']).strip()
+
+                logging.info(f"Processing URL ({index + 1}/{total_urls}): {url}")
+                if database.check_if_url_exists(conn, table_name, url):
+                    logging.warning(f"URL already processed. Skipping.")
+                    continue
+
+                try:
+                    time.sleep(random.uniform(agent_config['rate_limit_min'], agent_config['rate_limit_max']))
+                    record_data, content_for_llm = process_url(scraping_session, url, lastmodified, recency_threshold)
+                    if content_for_llm:
+                        llm_batch.append({'url': url, 'content': content_for_llm, 'is_maybe': record_data['is_new'] == 'maybe'})
+                    processed_records.append(record_data)
+
+                except scraper.Scraper403Error:
+                    logging.error(f"403 Forbidden error for {url}. Logging for retry.")
+                    log_retry_url(url, csv_date_str)
+                except Exception as e:
+                    logging.error(f"An unexpected error occurred while processing {url}: {e}", exc_info=True)
+
+                # --- UPGRADE: Check if we have reached a progress checkpoint. ---
+                if (index + 1) in checkpoints:
+                    submit_llm_batch(llm_batch, processed_records)
+
+        # --- UPGRADE: Process the final batch after the loop completes. ---
+        # This handles the last 25% of items and any remaining items in manual retry mode.
+        submit_llm_batch(llm_batch, processed_records)
+        
+        for record in processed_records:
+            database.insert_record(conn, table_name, record)
+        logging.info(f"Completed processing sitemap URLs. {len(processed_records)} records saved to the database.")
+    else:
+        logging.info("--- Skipping Sitemap Processing (--news-only flag detected) ---")
+
+
+    # --- NEW: Process Press Releases from the News API ---
+    logging.info("--- Processing Press Releases from News API ---")
+    press_releases = scraper.fetch_press_releases(scraping_session)
+    if press_releases:
+        one_day = timedelta(days=1)
+        llm_batch_pr = []
+        records_pr = []
+
+        for item in press_releases:
+            try:
+                pub_date_str = item.get('datePublished')
+                if not pub_date_str:
+                    continue
+                
+                pub_date = dateparser.parse(pub_date_str)
+                if not pub_date:
+                    continue
+                
+                # CORRECTED: Filter against the target date of the run, not the current date
+                if abs(target_date_obj.date() - pub_date.date()) > one_day:
+                    continue
+
+                # CORRECTED: The API provides a full URL, no need to build it
+                full_url = item.get('url')
+                if not full_url:
+                    continue
+                
+                if database.check_if_url_exists(conn, table_name, full_url):
+                    logging.info(f"Press release already exists in database. Skipping: {full_url}")
+                    continue
+                
+                logging.info(f"Processing new press release: {full_url}")
+                time.sleep(random.uniform(agent_config['rate_limit_min'], agent_config['rate_limit_max']))
+                
+                html = scraper.fetch_page(scraping_session, full_url)
+                if not html:
+                    logging.warning(f"Could not fetch HTML for press release: {full_url}")
+                    continue
+                
+                content = scraper.extract_article_content(html)
+                if not content:
+                    logging.warning(f"Could not extract content for press release: {full_url}")
+                    continue
+
+                record = {
+                    'url': full_url,
+                    'lastmodified': pub_date.isoformat(),
+                    'is_new': 'yes',
+                    'summary': None,
+                    'filetype': 'HTML',
+                    'page_date': pub_date.strftime("%Y-%m-%d"),
+                    'category': None,
+                    'extracted_text': content
+                }
+                records_pr.append(record)
+                # Give minor priority by classifying as 'maybe' for report_extras
+                is_maybe = abs(target_date_obj.date() - pub_date.date()) <= one_day
+                llm_batch_pr.append({'url': full_url, 'content': content, 'is_maybe': is_maybe})
+
+            except Exception as e:
+                logging.error(f"An unexpected error occurred while processing press release item {item.get('url')}: {e}", exc_info=True)
+        
+        if llm_batch_pr:
+            logging.info(f"Submitting a batch of {len(llm_batch_pr)} press releases to the LLM for summary.")
+            summary_results = llm_handler.get_batch_summaries(llm_batch_pr)
+            
+            url_to_record_map_pr = {rec['url']: rec for rec in records_pr}
+
+            for url, result in summary_results.items():
+                if url in url_to_record_map_pr:
+                    # Manually set category to 'Press Release' as requested
+                    url_to_record_map_pr[url]['category'] = "Press Release" 
+                    url_to_record_map_pr[url]['summary'] = result.get('summary')
+            
+            for record in records_pr:
+                database.insert_record(conn, table_name, record)
+            logging.info(f"Completed processing press releases. {len(records_pr)} new records saved.")
 
     if not args.test:
         report_records = database.fetch_new_and_maybe_records(conn, table_name)
