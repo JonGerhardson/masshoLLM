@@ -22,6 +22,7 @@ def generate_report(records: List[Dict[str, Any]], csv_date_str: str):
     new_announcements = []
     new_documents = []
     might_be_new = []
+    press_releases = []
 
     # --- NEW, SIMPLIFIED LOGIC ---
     # This now correctly reads the category field directly from the database record.
@@ -34,6 +35,8 @@ def generate_report(records: List[Dict[str, Any]], csv_date_str: str):
             new_announcements.append(record)
         elif category == 'Recent Update':
             might_be_new.append(record)
+        elif category == 'Press Release':
+            press_releases.append(record)
         # All other categories ('Timeless Info', 'API Error', etc.) are ignored for the report.
 
     # --- Format Date ---
@@ -57,6 +60,15 @@ def generate_report(records: List[Dict[str, Any]], csv_date_str: str):
             markdown_content += f"**Summary:** {item.get('summary', 'No summary generated.')}\n\n"
     else:
         markdown_content += "_No new announcements were identified._\n\n"
+
+    # Section for Press Releases
+    markdown_content += "## Press Releases\n\n"
+    if press_releases:
+        for item in press_releases:
+            markdown_content += f"### [{item['url']}]({item['url']})\n"
+            markdown_content += f"**Summary:** {item.get('summary', 'No summary generated.')}\n\n"
+    else:
+        markdown_content += "_No new press releases were identified._\n\n"
 
     # Section 2: New Documents
     markdown_content += "## New documents\n\n"
@@ -130,4 +142,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
