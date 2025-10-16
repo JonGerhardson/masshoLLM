@@ -89,6 +89,19 @@ def fetch_new_and_maybe_records(conn: sqlite3.Connection, table_name: str) -> Li
         logging.error(f"Could not fetch records for report from table {sanitized_table_name}: {e}")
         return []
 
+def fetch_new_records(conn: sqlite3.Connection, table_name: str) -> List[Dict[str, Any]]:
+    """Fetches all records marked as 'yes' for reporting."""
+    sanitized_table_name = _sanitize_table_name(table_name)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    try:
+        cur.execute(f"SELECT * FROM {sanitized_table_name} WHERE is_new = 'yes'")
+        rows = cur.fetchall()
+        return [dict(row) for row in rows]
+    except sqlite3.Error as e:
+        logging.error(f"Could not fetch 'new' records for report from table {sanitized_table_name}: {e}")
+        return []
+
 # --- NEW FUNCTION for --retry_llm feature ---
 def fetch_records_for_llm_retry(conn: sqlite3.Connection, table_name: str) -> List[Dict[str, Any]]:
     """Fetches records that have stored text but failed LLM processing."""
@@ -117,4 +130,3 @@ def update_llm_results(conn: sqlite3.Connection, table_name: str, record_id: int
         conn.commit()
     except sqlite3.Error as e:
         logging.error(f"Failed to update record ID {record_id} with LLM results: {e}")
-
