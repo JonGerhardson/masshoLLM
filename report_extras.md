@@ -1,3 +1,7 @@
+
+# DEPRECATED. USE /report_extras/report_extras.py instead
+
+```
 import logging
 import argparse
 import yaml
@@ -321,3 +325,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+```
