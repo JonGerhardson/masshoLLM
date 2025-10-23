@@ -29,7 +29,7 @@ ua = UserAgent()
 def create_session_with_retries() -> requests.Session:
     """Creates a cloudscraper session object with more robust headers to bypass anti-bot measures."""
     session = cloudscraper.create_scraper()
-    # --- UPGRADE: Add a more comprehensive set of default headers to the session ---
+    # ---  default headers ---
     session.headers.update({
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
         'Accept-Language': 'en-US,en;q=0.9',
@@ -60,11 +60,9 @@ def fetch_page(session: requests.Session, url: str) -> Optional[str]:
         return None
 
 def extract_download_page_date(html: str) -> Optional[datetime]:
-    """Parses the HTML of a /doc/ landing page to find the 'Last updated' or 'Date' field."""
+    """Parses the HTML of a /doc/ landing page to find the 'Last updated' date."""
     try:
         soup = BeautifulSoup(html, 'html.parser')
-        
-        # Check for "last updated" pattern
         last_updated_th = soup.find('th', scope="row", string=lambda t: t and "last updated" in t.lower())
         if last_updated_th:
             next_td = last_updated_th.find_next_sibling('td')
@@ -72,52 +70,61 @@ def extract_download_page_date(html: str) -> Optional[datetime]:
                 date_span = next_td.find('span', class_='ma__listing-table__data-item')
                 if date_span:
                     return dateparser.parse(date_span.get_text(strip=True))
-
-        # --- ADDED: Check for "Date:" pattern ---
-        date_th = soup.find('th', scope="row", string=lambda t: t and "date:" in t.lower())
-        if date_th:
-            next_td = date_th.find_next_sibling('td')
-            if next_td:
-                date_span = next_td.find('span', class_='ma__listing-table__data-item')
-                if date_span:
-                    return dateparser.parse(date_span.get_text(strip=True))
         
-        # Check for "last updated on" pattern
         last_updated_dt = soup.find('dt', string=lambda t: t and "last updated on" in t.lower())
         if last_updated_dt:
             last_updated_dd = last_updated_dt.find_next_sibling('dd')
             if last_updated_dd:
                 return dateparser.parse(last_updated_dd.get_text(strip=True))
-        
         return None
     except Exception as e:
         logging.error(f"Error parsing date from download page: {e}")
         return None
 
-
-def find_best_date_on_page(html: str) -> Optional[datetime]:
-    """Tries to find any plausible date from a standard HTML page using multiple methods."""
+def find_best_date_on_page(html: str) -> Dict[str, Optional[datetime]]:
+    """
+    Tries to find any plausible date from a standard HTML page using multiple methods.
+    
+    UPDATE: Now returns a dictionary distinguishing between a 'posting_date' 
+    (for articles/updates) and a 'meeting_date' (for events).
+    """
+    results = {
+        'posting_date': None,
+        'meeting_date': None
+    }
     try:
         soup = BeautifulSoup(html, 'html.parser')
+
+        # --- NEW: Prioritize finding a specific meeting/event date ---
+        # This is a common selector on Mass.gov event pages
+        event_time_tag = soup.find('time', class_='ma-page-header__event-date', attrs={'datetime': True})
+        if event_time_tag:
+            results['meeting_date'] = dateparser.parse(event_time_tag['datetime'])
+            # If we find a meeting date, we can often stop, as this is the most specific date.
+            # However, we'll continue just in case a posting date is also relevant.
+
+        # --- Standard Posting Date Logic ---
         meta_tag = soup.find('meta', property='article:published_time')
         if meta_tag and meta_tag.get('content'):
-            return dateparser.parse(meta_tag['content'])
+            results['posting_date'] = dateparser.parse(meta_tag['content'])
         
         press_date_div = soup.find('div', class_='ma__press-status__date')
         if press_date_div:
-            return dateparser.parse(press_date_div.get_text(strip=True))
+            results['posting_date'] = dateparser.parse(press_date_div.get_text(strip=True))
             
         date_span = soup.find('span', class_='ma-page-header__published-date')
         if date_span:
-            return dateparser.parse(date_span.get_text(strip=True).replace("Published on ", ""))
+            results['posting_date'] = dateparser.parse(date_span.get_text(strip=True).replace("Published on ", ""))
             
         time_tag = soup.find('time', attrs={'datetime': True})
-        if time_tag:
-            return dateparser.parse(time_tag['datetime'])
-        return None
+        if time_tag and not results['posting_date'] and not results['meeting_date']:
+            # Use this as a fallback posting date if nothing else was found
+            results['posting_date'] = dateparser.parse(time_tag['datetime'])
+            
+        return results
     except Exception as e:
         logging.error(f"Error finding a generic date on page: {e}")
-        return None
+        return results
 
 def extract_article_content(html: str) -> Optional[str]:
     """Uses 'trafilatura' to extract main article content."""
@@ -197,9 +204,10 @@ def fetch_press_releases(session: requests.Session) -> List[Dict[str, Any]]:
     url = "https://www.mass.gov/api/v1/news"
     logging.info(f"Fetching press releases from {url}")
     try:
+        # --- UPGRADE: Add browser-like headers to the API request to avoid 403 errors. ---
         headers = {
             'User-Agent': ua.random,
-            'Accept': 'application/json'
+            'Referer': 'https://www.mass.gov/'
         }
         response = session.get(url, headers=headers, timeout=20)
         response.raise_for_status()
