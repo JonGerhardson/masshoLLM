@@ -14,29 +14,37 @@ def generate_report(records: List[Dict[str, Any]], csv_date_str: str):
     """
     Generates a Markdown report from a list of records, categorizing them
     based on the LLM's analysis.
+    
+    UPDATE: Now includes sections for "Meeting Announcements" and "Meeting Materials".
     """
     report_filename = f"report_{csv_date_str}.md"
     logging.info(f"Generating daily report: {report_filename}")
 
     # --- Categorize Records ---
     new_announcements = []
+    press_releases = []
+    meeting_announcements = [] # --- NEW ---
+    meeting_materials = [] # --- NEW ---
     new_documents = []
     might_be_new = []
-    press_releases = []
 
-    # --- NEW, SIMPLIFIED LOGIC ---
+    # --- UPDATED LOGIC ---
     # This now correctly reads the category field directly from the database record.
     for record in records:
         category = record.get('category')
 
-        if category == 'New Document':
-            new_documents.append(record)
-        elif category == 'New Announcement':
+        if category == 'New Announcement':
             new_announcements.append(record)
-        elif category == 'Recent Update':
-            might_be_new.append(record)
         elif category == 'Press Release':
             press_releases.append(record)
+        elif category == 'Meeting Announcement': # --- NEW ---
+            meeting_announcements.append(record)
+        elif category == 'Meeting Materials': # --- NEW ---
+            meeting_materials.append(record)
+        elif category == 'New Document':
+            new_documents.append(record)
+        elif category == 'Recent Update':
+            might_be_new.append(record)
         # All other categories ('Timeless Info', 'API Error', etc.) are ignored for the report.
 
     # --- Format Date ---
@@ -61,7 +69,7 @@ def generate_report(records: List[Dict[str, Any]], csv_date_str: str):
     else:
         markdown_content += "_No new announcements were identified._\n\n"
 
-    # Section for Press Releases
+    # Section 2: Press Releases
     markdown_content += "## Press Releases\n\n"
     if press_releases:
         for item in press_releases:
@@ -70,7 +78,26 @@ def generate_report(records: List[Dict[str, Any]], csv_date_str: str):
     else:
         markdown_content += "_No new press releases were identified._\n\n"
 
-    # Section 2: New Documents
+    # --- NEW Section 3: Meeting Announcements ---
+    markdown_content += "## Meeting announcements\n\n"
+    if meeting_announcements:
+        for item in meeting_announcements:
+            markdown_content += f"### [{item['url']}]({item['url']})\n"
+            markdown_content += f"**Meeting Date:** {item.get('page_date', 'N/A')}\n"
+            markdown_content += f"**Summary:** {item.get('summary', 'No summary generated.')}\n\n"
+    else:
+        markdown_content += "_No new meeting announcements were identified._\n\n"
+
+    # --- NEW Section 4: Meeting Materials ---
+    markdown_content += "## Meeting materials\n\n"
+    if meeting_materials:
+        for item in meeting_materials:
+            markdown_content += f"### [{item['url']}]({item['url']})\n"
+            markdown_content += f"**Summary:** {item.get('summary', 'No summary generated.')}\n\n"
+    else:
+        markdown_content += "_No new meeting materials were identified._\n\n"
+
+    # Section 5: New Documents
     markdown_content += "## New documents\n\n"
     if new_documents:
         for item in new_documents:
@@ -80,7 +107,7 @@ def generate_report(records: List[Dict[str, Any]], csv_date_str: str):
     else:
         markdown_content += "_No new documents with confirmed dates were found._\n\n"
 
-    # Section 3: Might Be New?
+    # Section 6: Might Be New?
     markdown_content += "## Might be new?\n\n"
     if might_be_new:
         for item in might_be_new:
