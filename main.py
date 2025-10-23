@@ -76,8 +76,13 @@ def load_config():
         logging.critical(f"CRITICAL ERROR: Error parsing config.yaml: {e}")
         exit()
 
-def process_url(session, url, lastmodified, recency_threshold):
-    """Processes a single URL, determining its type and extracting data."""
+def process_url(session, url, lastmodified, recency_threshold, target_date_obj):
+    """
+    Processes a single URL, determining its type and extracting data.
+    
+    UPDATE: Now uses the `target_date_obj` and new scraper logic to 
+    identify meeting announcements.
+    """
     record_data = {
         'url': url,
         'lastmodified': lastmodified,
@@ -119,12 +124,35 @@ def process_url(session, url, lastmodified, recency_threshold):
         record_data['filetype'] = 'HTML'
         html = scraper.fetch_page(session, url)
         if html:
-            page_date_obj = scraper.find_best_date_on_page(html)
-            if page_date_obj:
-                record_data['page_date'] = page_date_obj.strftime("%Y-%m-%d")
-                if datetime.now() - page_date_obj <= timedelta(days=recency_threshold):
+            # --- UPDATED DATE LOGIC ---
+            date_info = scraper.find_best_date_on_page(html)
+            posting_date = date_info.get('posting_date')
+            meeting_date = date_info.get('meeting_date')
+            
+            # Get yesterday's date, respecting the target_date we are running for
+            yesterday = (target_date_obj - timedelta(days=1)).date()
+
+            if meeting_date:
+                logging.info(f"Meeting date found: {meeting_date.strftime('%Y-%m-%d')}")
+                record_data['page_date'] = meeting_date.strftime("%Y-%m-%d")
+                # Check if meeting is yesterday, today, or in the future
+                if meeting_date.date() >= yesterday:
                     record_data['is_new'] = 'yes'
-                    logging.info("New article found based on page date.")
+                    logging.info("New meeting announcement found based on event date.")
+                else:
+                    record_data['is_new'] = 'maybe' # It's a past meeting
+                    logging.info("Past meeting page found. Flagging as 'maybe' for LLM classification (Meeting Materials).")
+            
+            elif posting_date:
+                logging.info(f"Posting date found: {posting_date.strftime('%Y-%m-%d')}")
+                record_data['page_date'] = posting_date.strftime("%Y-%m-%d")
+                # Check if posting date is within the recency threshold of *today*
+                if (datetime.now() - posting_date) <= timedelta(days=recency_threshold):
+                    record_data['is_new'] = 'yes'
+                    logging.info("New article found based on posting date.")
+                else:
+                    record_data['is_new'] = 'maybe' # It's an old article
+            
             else:
                 record_data['is_new'] = 'maybe'
                 logging.info("Page has no discernible date. Flagging as 'maybe'.")
@@ -309,7 +337,8 @@ Examples of use:
 
                 try:
                     time.sleep(random.uniform(agent_config['rate_limit_min'], agent_config['rate_limit_max']))
-                    record_data, content_for_llm = process_url(scraping_session, url, lastmodified, recency_threshold)
+                    # --- Pass target_date_obj to process_url ---
+                    record_data, content_for_llm = process_url(scraping_session, url, lastmodified, recency_threshold, target_date_obj)
                     if content_for_llm:
                         llm_batch.append({'url': url, 'content': content_for_llm, 'is_maybe': record_data['is_new'] == 'maybe'})
                     processed_records.append(record_data)
@@ -428,4 +457,3 @@ Examples of use:
 
 if __name__ == "__main__":
     main()
-
