@@ -31,6 +31,7 @@ def get_pseudo_batch_prompt():
     """Generates the system prompt for the LLM to handle a batch and return JSON."""
     today_date_str = datetime.now().strftime("%Y-%m-%d")
     
+    # --- PROMPT UPDATED with new categories and logic ---
     prompt = f"""
     You are an automated text processing service. Today's date is {today_date_str}.
     You will be given a series of documents, each identified by a URL and a type ('yes' for new, 'maybe' for unknown date).
@@ -39,13 +40,22 @@ def get_pseudo_batch_prompt():
 
     For each document:
     1. If the type is 'yes', classify it as "New Document". The justification should be "Confirmed new via site metadata."
-    2. If the type is 'maybe', classify the content into ONE of these categories: "New Announcement", "Recent Update", or "Timeless Info", and provide a one-sentence justification.
+       (Note: Some 'yes' documents might be meeting notices; if the content *clearly* indicates a meeting, 
+       you may override this and classify as "Meeting Announcement" or "Meeting Materials".)
+    
+    2. If the type is 'maybe', classify the content into ONE of these categories:
+       - "Meeting Announcement": The text is a notice for a public meeting scheduled for today, yesterday, or a future date.
+       - "Meeting Materials": The text provides materials for a meeting that has already passed (e.g., minutes, agendas, recordings, presentations).
+       - "New Announcement": A news-like update, press release, or time-sensitive public notice (NOT a meeting).
+       - "Recent Update": A minor change to an existing informational page.
+       - "Timeless Info": A general informational page with no clear publication date (e.g., a "how-to" guide, main topic page).
+
     3. For ALL documents, provide a concise, neutral, two-sentence summary suitable for a news lead.
 
     The format for each object in the JSON array MUST be:
     {{
       "url": "The original URL of the document",
-      "category": "Your chosen category",
+      "category": "Your chosen category (New Document, Meeting Announcement, Meeting Materials, New Announcement, Recent Update, or Timeless Info)",
       "justification": "Your one-sentence justification",
       "summary": "Your two-sentence summary"
     }}
