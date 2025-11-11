@@ -491,3 +491,4 @@ def get_press_release_summaries(batch: List[Dict[str, Any]]) -> Dict[str, str]:
             time.sleep(5)   # About 4 seconds to respect 15 RPM limit
     
     return all_results
+

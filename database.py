@@ -307,3 +307,4 @@ def fetch_new_records_with_exclusions(conn: sqlite3.Connection, table_name: str)
     except sqlite3.Error as e:
         logging.error(f"Could not fetch 'new' records for report from table {sanitized_table_name}: {e}")
         return []
+
