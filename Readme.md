@@ -8,6 +8,59 @@ AI generated readme below. Quickstart: ```git clone```, ```cd masshoLLM```, ```p
 
 New functionality to exclude from sending to final briefing LLM pages that are not dated but the page content indicates it is old, some rudimentary fact checking steps, and more. . . Still p. sketchy, caveat emptor. 
 
+```
+
+  Added
+   - Exclusion feature: Added an excluded column to the database schema to allow marking
+     pages for exclusion from LLM processing
+   - Automatic exclusion marking: LLM now flags content that references information more
+     than 2 months old as "Outdated Content"
+   - Database migration: Automatic schema migration to add the excluded column to existing
+     tables
+   - Exclusion filtering: Updated all database fetch functions to exclude records marked as
+     excluded by default
+   - Manual exclusion capability: Users can manually mark pages as excluded using SQLite
+     browser with SQL commands like UPDATE massgov_YYYY_MM_DD SET excluded = 'yes' WHERE 
+     url = 'specific_url'
+
+  Changed
+   - LLM Prompt Enhancement: Updated LLM prompt in llm_handler.py to include instructions
+     for identifying content older than 2 months
+   - Database schema: Added excluded TEXT column to the daily table schema
+   - Database operations: Modified insert_record, update_scraped_record, and other
+     database functions to handle the new excluded column
+   - Fetch functions: Updated fetch_new_records, fetch_new_and_maybe_records, and related
+     functions to filter out excluded records
+   - LLM processing: Modified get_batch_summaries in llm_handler.py to accept database
+     connection parameters and mark outdated content in DB
+   - Main application flow: Updated main.py to pass database connection and table name to
+     LLM processing functions
+
+  Integration
+   - Main processing flow: LLM processing in main.py now automatically flags and marks
+     outdated content for future exclusion
+   - Report generation: report_extras and other reporting functions now automatically
+     filter out excluded pages
+   - Retry functionality: LLM retry operations also respect the exclusion flag
+
+  Files Modified
+   - database.py - Added exclusion column support and migration functionality
+   - llm_handler.py - Updated prompt and processing logic for outdated content
+   - main.py - Updated to pass database parameters to LLM processing
+   - dual_model_processor.py - Added similar functionality for consistency (though not
+     currently used in main flow)
+   - report_extras.py - Updated to use exclusion-filtered database queries
+   - README.md - Updated documentation to reflect new exclusion feature
+
+  Usage
+   - Automatic exclusion: Content identified as more than 2 months old is automatically
+     marked for exclusion
+   - Manual exclusion: Use SQLite commands like UPDATE table_name SET excluded = 'yes' to
+     manually exclude pages
+   - Excluded pages are automatically filtered out when running report_extras or other LLM
+     processing
+```
+
 ## Features
 
 - **Web Scraping**: Automatically scans mass.gov for new content
