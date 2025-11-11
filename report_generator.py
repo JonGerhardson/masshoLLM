@@ -7,6 +7,20 @@ from typing import List, Dict, Any
 # Import the database module to interact with the database
 import database
 
+# Import fact checker for accuracy verification
+try:
+    from fact_checker import verify_summary
+except ImportError:
+    def verify_summary(source_text: str, summary: str, url: str = "") -> Dict[str, Any]:
+        # Dummy function if fact_checker is not available
+        return {
+            'accuracy_score': 1.0,
+            'is_accurate': True,
+            'confidence_score': 1.0,
+            'issues': [],
+            'suggestions': ['Fact checking not available']
+        }
+
 # --- Logging Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -65,7 +79,27 @@ def generate_report(records: List[Dict[str, Any]], csv_date_str: str):
     if new_announcements:
         for item in new_announcements:
             markdown_content += f"### [{item['url']}]({item['url']})\n"
-            markdown_content += f"**Summary:** {item.get('summary', 'No summary generated.')}\n\n"
+            
+            # Add accuracy verification if extracted text is available
+            extracted_text = item.get('extracted_text', '')
+            if extracted_text:
+                summary = item.get('summary', 'No summary generated.')
+                verification_result = verify_summary(extracted_text, summary, item['url'])
+                
+                if not verification_result.get('is_accurate', True):
+                    # Create more detailed warning with specific issues
+                    detailed_issues = verification_result.get('detailed_issues', [])
+                    if detailed_issues:
+                        issues_text = "; ".join(detailed_issues[:2])  # Limit to first 2 issues to avoid clutter
+                        if len(detailed_issues) > 2:
+                            issues_text += f"; +{len(detailed_issues) - 2} more issues"
+                        summary += f"\n\n⚠️ **[FACT CHECK WARNING: {len(detailed_issues)} accuracy issues - {issues_text}. Review before relying on this information]**"
+                    else:
+                        summary += f"\n\n⚠️ **[FACT CHECK WARNING: {len(verification_result.get('issues', []))} accuracy issues detected - review before relying on this information]**"
+                
+                markdown_content += f"**Summary:** {summary}\n\n"
+            else:
+                markdown_content += f"**Summary:** {item.get('summary', 'No summary generated.')}\n\n"
     else:
         markdown_content += "_No new announcements were identified._\n\n"
 
@@ -74,7 +108,27 @@ def generate_report(records: List[Dict[str, Any]], csv_date_str: str):
     if press_releases:
         for item in press_releases:
             markdown_content += f"### [{item['url']}]({item['url']})\n"
-            markdown_content += f"**Summary:** {item.get('summary', 'No summary generated.')}\n\n"
+            
+            # Add accuracy verification if extracted text is available
+            extracted_text = item.get('extracted_text', '')
+            if extracted_text:
+                summary = item.get('summary', 'No summary generated.')
+                verification_result = verify_summary(extracted_text, summary, item['url'])
+                
+                if not verification_result.get('is_accurate', True):
+                    # Create more detailed warning with specific issues
+                    detailed_issues = verification_result.get('detailed_issues', [])
+                    if detailed_issues:
+                        issues_text = "; ".join(detailed_issues[:2])  # Limit to first 2 issues to avoid clutter
+                        if len(detailed_issues) > 2:
+                            issues_text += f"; +{len(detailed_issues) - 2} more issues"
+                        summary += f"\n\n⚠️ **[FACT CHECK WARNING: {len(detailed_issues)} accuracy issues - {issues_text}. Review before relying on this information]**"
+                    else:
+                        summary += f"\n\n⚠️ **[FACT CHECK WARNING: {len(verification_result.get('issues', []))} accuracy issues detected - review before relying on this information]**"
+                
+                markdown_content += f"**Summary:** {summary}\n\n"
+            else:
+                markdown_content += f"**Summary:** {item.get('summary', 'No summary generated.')}\n\n"
     else:
         markdown_content += "_No new press releases were identified._\n\n"
 
@@ -84,7 +138,27 @@ def generate_report(records: List[Dict[str, Any]], csv_date_str: str):
         for item in meeting_announcements:
             markdown_content += f"### [{item['url']}]({item['url']})\n"
             markdown_content += f"**Meeting Date:** {item.get('page_date', 'N/A')}\n"
-            markdown_content += f"**Summary:** {item.get('summary', 'No summary generated.')}\n\n"
+            
+            # Add accuracy verification if extracted text is available
+            extracted_text = item.get('extracted_text', '')
+            if extracted_text:
+                summary = item.get('summary', 'No summary generated.')
+                verification_result = verify_summary(extracted_text, summary, item['url'])
+                
+                if not verification_result.get('is_accurate', True):
+                    # Create more detailed warning with specific issues
+                    detailed_issues = verification_result.get('detailed_issues', [])
+                    if detailed_issues:
+                        issues_text = "; ".join(detailed_issues[:2])  # Limit to first 2 issues to avoid clutter
+                        if len(detailed_issues) > 2:
+                            issues_text += f"; +{len(detailed_issues) - 2} more issues"
+                        summary += f"\n\n⚠️ **[FACT CHECK WARNING: {len(detailed_issues)} accuracy issues - {issues_text}. Review before relying on this information]**"
+                    else:
+                        summary += f"\n\n⚠️ **[FACT CHECK WARNING: {len(verification_result.get('issues', []))} accuracy issues detected - review before relying on this information]**"
+                
+                markdown_content += f"**Summary:** {summary}\n\n"
+            else:
+                markdown_content += f"**Summary:** {item.get('summary', 'No summary generated.')}\n\n"
     else:
         markdown_content += "_No new meeting announcements were identified._\n\n"
 
@@ -93,7 +167,27 @@ def generate_report(records: List[Dict[str, Any]], csv_date_str: str):
     if meeting_materials:
         for item in meeting_materials:
             markdown_content += f"### [{item['url']}]({item['url']})\n"
-            markdown_content += f"**Summary:** {item.get('summary', 'No summary generated.')}\n\n"
+            
+            # Add accuracy verification if extracted text is available
+            extracted_text = item.get('extracted_text', '')
+            if extracted_text:
+                summary = item.get('summary', 'No summary generated.')
+                verification_result = verify_summary(extracted_text, summary, item['url'])
+                
+                if not verification_result.get('is_accurate', True):
+                    # Create more detailed warning with specific issues
+                    detailed_issues = verification_result.get('detailed_issues', [])
+                    if detailed_issues:
+                        issues_text = "; ".join(detailed_issues[:2])  # Limit to first 2 issues to avoid clutter
+                        if len(detailed_issues) > 2:
+                            issues_text += f"; +{len(detailed_issues) - 2} more issues"
+                        summary += f"\n\n⚠️ **[FACT CHECK WARNING: {len(detailed_issues)} accuracy issues - {issues_text}. Review before relying on this information]**"
+                    else:
+                        summary += f"\n\n⚠️ **[FACT CHECK WARNING: {len(verification_result.get('issues', []))} accuracy issues detected - review before relying on this information]**"
+                
+                markdown_content += f"**Summary:** {summary}\n\n"
+            else:
+                markdown_content += f"**Summary:** {item.get('summary', 'No summary generated.')}\n\n"
     else:
         markdown_content += "_No new meeting materials were identified._\n\n"
 
@@ -102,7 +196,27 @@ def generate_report(records: List[Dict[str, Any]], csv_date_str: str):
     if new_documents:
         for item in new_documents:
             markdown_content += f"### [{item['url']}]({item['url']})\n"
-            markdown_content += f"**Summary:** {item.get('summary', 'No summary generated.')}\n"
+            
+            # Add accuracy verification if extracted text is available
+            extracted_text = item.get('extracted_text', '')
+            if extracted_text:
+                summary = item.get('summary', 'No summary generated.')
+                verification_result = verify_summary(extracted_text, summary, item['url'])
+                
+                if not verification_result.get('is_accurate', True):
+                    # Create more detailed warning with specific issues
+                    detailed_issues = verification_result.get('detailed_issues', [])
+                    if detailed_issues:
+                        issues_text = "; ".join(detailed_issues[:2])  # Limit to first 2 issues to avoid clutter
+                        if len(detailed_issues) > 2:
+                            issues_text += f"; +{len(detailed_issues) - 2} more issues"
+                        summary += f"\n\n⚠️ **[FACT CHECK WARNING: {len(detailed_issues)} accuracy issues - {issues_text}. Review before relying on this information]**"
+                    else:
+                        summary += f"\n\n⚠️ **[FACT CHECK WARNING: {len(verification_result.get('issues', []))} accuracy issues detected - review before relying on this information]**"
+                
+                markdown_content += f"**Summary:** {summary}\n"
+            else:
+                markdown_content += f"**Summary:** {item.get('summary', 'No summary generated.')}\n"
             markdown_content += f"**File Type:** {item.get('filetype', 'N/A')} | **Published Date:** {item.get('page_date', 'N/A')}\n\n"
     else:
         markdown_content += "_No new documents with confirmed dates were found._\n\n"
@@ -112,7 +226,27 @@ def generate_report(records: List[Dict[str, Any]], csv_date_str: str):
     if might_be_new:
         for item in might_be_new:
             markdown_content += f"### [{item['url']}]({item['url']})\n"
-            markdown_content += f"**Summary:** {item.get('summary', 'No summary generated.')}\n\n"
+            
+            # Add accuracy verification if extracted text is available
+            extracted_text = item.get('extracted_text', '')
+            if extracted_text:
+                summary = item.get('summary', 'No summary generated.')
+                verification_result = verify_summary(extracted_text, summary, item['url'])
+                
+                if not verification_result.get('is_accurate', True):
+                    # Create more detailed warning with specific issues
+                    detailed_issues = verification_result.get('detailed_issues', [])
+                    if detailed_issues:
+                        issues_text = "; ".join(detailed_issues[:2])  # Limit to first 2 issues to avoid clutter
+                        if len(detailed_issues) > 2:
+                            issues_text += f"; +{len(detailed_issues) - 2} more issues"
+                        summary += f"\n\n⚠️ **[FACT CHECK WARNING: {len(detailed_issues)} accuracy issues - {issues_text}. Review before relying on this information]**"
+                    else:
+                        summary += f"\n\n⚠️ **[FACT CHECK WARNING: {len(verification_result.get('issues', []))} accuracy issues detected - review before relying on this information]**"
+                
+                markdown_content += f"**Summary:** {summary}\n\n"
+            else:
+                markdown_content += f"**Summary:** {item.get('summary', 'No summary generated.')}\n\n"
     else:
         markdown_content += "_No items were identified as recent updates._\n\n"
 
@@ -169,3 +303,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

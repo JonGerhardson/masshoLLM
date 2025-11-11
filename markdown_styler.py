@@ -27,7 +27,7 @@ def convert_markdown_to_html(input_file, output_file):
         body {
             background-color: #fdf6e3; /* Creamy background */
             font-family: Arial, sans-serif; /* Set font to Arial */
-            color: #586e75; /* Darker main text for better readability */
+            color: #0a0a0a; /* Darker main text for better readability */
             line-height: 1.6;
             margin: 0;
             padding: 2em;
@@ -121,4 +121,5 @@ if __name__ == '__main__':
     args = parser.parse_args()
     
     convert_markdown_to_html(args.input_file, args.output_file)
+
 

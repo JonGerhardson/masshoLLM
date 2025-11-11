@@ -20,7 +20,8 @@ sys.path.append(str(ROOT_DIR))
 
 # --- Custom Modules ---
 import database
-from llm_provider import LLMProvider, BriefingConfig # New provider
+from llm_provider import BriefingConfig # Provider config
+from provider_factory import get_provider # Provider factory
 
 def setup_briefing_logging(date_str: str):
     """Configures logging for the briefing generator, including a detailed LLM log."""
@@ -144,29 +145,43 @@ def main():
         app_logger.warning(f"No new items found in the database for {args.date}. Cannot generate briefing.")
         return
 
-    # --- Split records ---
-    meeting_records = [r for r in all_records if r.get('category') == 'Meeting Announcement']
-    other_records = [r for r in all_records if r.get('category') != 'Meeting Announcement']
-    app_logger.info(f"Found {len(meeting_records)} meeting announcements and {len(other_records)} other items.")
+    # --- NEW LOGIC: Separate Unpublished Records ---
+    # Filter records based on the '--unpublished' text
+    llm_eligible_records = [r for r in all_records if r.get('extracted_text') != '--unpublished']
+    unpublished_records = [r for r in all_records if r.get('extracted_text') == '--unpublished']
+    
+    app_logger.info(f"Found {len(unpublished_records)} unpublished records to exclude from LLM processing.")
+
+    # --- Split LLM-eligible records ---
+    meeting_records = [r for r in llm_eligible_records if r.get('category') == 'Meeting Announcement']
+    other_records = [r for r in llm_eligible_records if r.get('category') != 'Meeting Announcement']
+    app_logger.info(f"Found {len(meeting_records)} meeting announcements and {len(other_records)} other items for LLM processing.")
 
     # --- Cost/Call Warning ---
-    # (Flash RPM is high, so we mainly warn about Pro calls)
-    num_flash_calls = len(meeting_records) + len(other_records)
-    num_pro_calls = 2 # (1 for top stories, 1 for final report)
+    # Calculate expected API usage based on content-based batching
+    num_flash_calls_initial = len(meeting_records) + len(other_records)
+    num_pro_calls_final = 2 # (1 for top stories, 1 for final report)
     
     app_logger.info(f"This operation will require approximately:")
-    app_logger.info(f"  - {num_flash_calls} calls to {config.flash_model_name}")
-    app_logger.info(f"  - {num_pro_calls} calls to {config.pro_model_name}")
+    app_logger.info(f"  - {num_flash_calls_initial} initial calls to {config.flash_model_name} (for initial processing)")
+    app_logger.info(f"  - {num_pro_calls_final} calls to {config.pro_model_name} (for final high-accuracy processing)")
     
-    if num_flash_calls > 20 or num_pro_calls > 5:
-        proceed = input("This may be a long and/or expensive operation. Proceed? (y/n): ").lower().strip()
+    # More conservative check for low-RPM models
+    expected_pro_minutes = num_pro_calls_final / config.pro_rpm
+    expected_flash_minutes = num_flash_calls_initial / config.flash_rpm
+    
+    app_logger.info(f"  - Estimated time: ~{expected_pro_minutes:.1f} min for Pro model calls")
+    app_logger.info(f"  - Estimated time: ~{expected_flash_minutes:.1f} min for Flash model calls")
+    
+    if num_pro_calls_final > 10:  # More conservative limit for 2 RPM model
+        proceed = input("This will use the low-RPM Pro model multiple times. Proceed? (y/n): ").lower().strip()
         if proceed != 'y':
             app_logger.info("Operation cancelled by user.")
             return
             
     # --- Initialize Provider ---
     try:
-        provider = LLMProvider(config, prompts)
+        provider = get_provider(config, prompts)
     except Exception as e:
         app_logger.critical(f"Failed to initialize LLMProvider: {e}")
         return
@@ -178,8 +193,8 @@ def main():
     app_logger.info("--- Starting Step 2: Summarizing News (Flash) ---")
     all_summaries = provider.summarize_news_batch(other_records, current_date_str)
 
-    if not all_summaries and not meetings_json:
-        app_logger.error("Failed to get any data from LLM (meetings or news). Aborting.")
+    if not all_summaries and not meetings_json and not unpublished_records:
+        app_logger.error("Failed to get any LLM-processed data, and no unpublished records found. Aborting.")
         return
 
     # --- Pipeline Step 3: Select Top Stories (Pro) ---
@@ -196,6 +211,25 @@ def main():
         top_story_urls=top_story_urls
     )
 
+    # --- NEW LOGIC: Append Unpublished Records Section ---
+    if final_briefing and unpublished_records:
+        app_logger.info("Appending unpublished pages section to briefing.")
+        
+        # Build the new section
+        # NOTE: The requirement is for these to be marked as "new" and page text is "--unpublished".
+        # We present the original URL and category from the database entry.
+        unpublished_section = "\n\n## Newly unpublished pages\n\nThese pages, which were previously identified as new or updated, have been marked as unpublished by the source system (mass.gov returned the content as `--unpublished`).\n"
+        
+        for record in unpublished_records:
+            # Check if the URL key exists before attempting to access it
+            url = record.get('url', 'N/A URL')
+            category = record.get('category', 'N/A Category')
+            
+            # Format as: * [Category] [URL]
+            unpublished_section += f"\n* **{category}**: {url}"
+            
+        final_briefing += unpublished_section
+        
     # --- Write Final Report ---
     # Resolve output dir relative to ROOT_DIR
     output_path = Path(args.output_dir)
@@ -213,12 +247,13 @@ def main():
     else:
         app_logger.error("Failed to generate the final news briefing.")
 
-    # --- Save raw/intermediate data for debugging ---
+    # --- Save raw/intermediate data for debugging (Append unpublished data for completeness) ---
     raw_filename = output_dir / f"briefing_{args.date}_intermediate_data.json"
     intermediate_data = {
         "parsed_meetings": meetings_json,
         "summarized_news": all_summaries,
-        "selected_top_stories": top_story_urls
+        "selected_top_stories": top_story_urls,
+        "unpublished_pages": [{"url": r.get('url'), "category": r.get('category')} for r in unpublished_records]
     }
     with open(raw_filename, 'w', encoding='utf-8') as f:
         json.dump(intermediate_data, f, indent=2)
