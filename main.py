@@ -7,6 +7,20 @@ import argparse
 import os
 import dateparser
 from datetime import datetime, timedelta
+import requests # Import requests to handle exceptions
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Verify that API key is available (using the same key as llm_handler)
+api_key = os.environ.get("GEMINI_API_KEY")
+
+if not api_key:
+    print("Warning: GEMINI_API_KEY not found in environment variables!")
+    print("Please ensure your .env file contains the GEMINI_API_KEY variable.")
+else:
+    print("API key loaded successfully from .env file.")
 
 # Import the custom modules we built
 import database
@@ -25,7 +39,7 @@ def setup_main_logging(is_test_mode=False, csv_date_str=None, is_retry_mode=Fals
     if is_test_mode:
         log_filename = os.path.join(log_dir, f"test_on_{timestamp}_for_{csv_date_str}_csv.log")
     elif is_retry_mode:
-        log_filename = os.path.join(log_dir, f"retry_run_on_{timestamp}_for_{csv_date_str}.log")
+        log_filename = os.path.join(log_dir, f"scraping_retry_run_on_{timestamp}_for_{csv_date_str}.log") # Updated log name
     elif is_llm_retry_mode:
         log_filename = os.path.join(log_dir, f"llm_retry_on_{timestamp}_for_{csv_date_str}.log")
 
@@ -79,9 +93,6 @@ def load_config():
 def process_url(session, url, lastmodified, recency_threshold, target_date_obj):
     """
     Processes a single URL, determining its type and extracting data.
-    
-    UPDATE: Now uses the `target_date_obj` and new scraper logic to 
-    identify meeting announcements.
     """
     record_data = {
         'url': url,
@@ -95,70 +106,86 @@ def process_url(session, url, lastmodified, recency_threshold, target_date_obj):
     }
     content_for_llm = None
 
-    if "/download" in url:
-        logging.info("URL identified as a document download. Using document workflow.")
-        
-        if url.endswith('/download/'):
-            landing_page_url = url[:-10]
-        elif url.endswith('/download'):
-            landing_page_url = url[:-9]
-        else:
-            landing_page_url = url.split('/download')[0]
-
-        html = scraper.fetch_page(session, landing_page_url)
-        
-        if html:
-            page_date_obj = scraper.extract_download_page_date(html)
-            if page_date_obj:
-                record_data['page_date'] = page_date_obj.strftime("%Y-%m-%d")
-                if datetime.now() - page_date_obj <= timedelta(days=recency_threshold):
-                    record_data['is_new'] = 'yes'
-        
-        if record_data['is_new'] == 'yes':
-              logging.info("New document found. Proceeding to download and analyze file type.")
-              doc_data = scraper.download_and_extract_document_text(session, url)
-              record_data['filetype'] = doc_data.get("filetype")
-              content_for_llm = doc_data.get("content_for_llm")
-    else:
-        logging.info("URL identified as a standard page. Using article workflow.")
-        record_data['filetype'] = 'HTML'
-        html = scraper.fetch_page(session, url)
-        if html:
-            # --- UPDATED DATE LOGIC ---
-            date_info = scraper.find_best_date_on_page(html)
-            posting_date = date_info.get('posting_date')
-            meeting_date = date_info.get('meeting_date')
+    try:
+        if "/download" in url:
+            logging.info("URL identified as a document download. Using document workflow.")
             
-            # Get yesterday's date, respecting the target_date we are running for
-            yesterday = (target_date_obj - timedelta(days=1)).date()
-
-            if meeting_date:
-                logging.info(f"Meeting date found: {meeting_date.strftime('%Y-%m-%d')}")
-                record_data['page_date'] = meeting_date.strftime("%Y-%m-%d")
-                # Check if meeting is yesterday, today, or in the future
-                if meeting_date.date() >= yesterday:
-                    record_data['is_new'] = 'yes'
-                    logging.info("New meeting announcement found based on event date.")
-                else:
-                    record_data['is_new'] = 'maybe' # It's a past meeting
-                    logging.info("Past meeting page found. Flagging as 'maybe' for LLM classification (Meeting Materials).")
-            
-            elif posting_date:
-                logging.info(f"Posting date found: {posting_date.strftime('%Y-%m-%d')}")
-                record_data['page_date'] = posting_date.strftime("%Y-%m-%d")
-                # Check if posting date is within the recency threshold of *today*
-                if (datetime.now() - posting_date) <= timedelta(days=recency_threshold):
-                    record_data['is_new'] = 'yes'
-                    logging.info("New article found based on posting date.")
-                else:
-                    record_data['is_new'] = 'maybe' # It's an old article
-            
+            if url.endswith('/download/'):
+                landing_page_url = url[:-10]
+            elif url.endswith('/download'):
+                landing_page_url = url[:-9]
             else:
-                record_data['is_new'] = 'maybe'
-                logging.info("Page has no discernible date. Flagging as 'maybe'.")
+                landing_page_url = url.split('/download')[0]
+
+            html = scraper.fetch_page(session, landing_page_url)
             
-            if record_data['is_new'] in ['yes', 'maybe']:
-                content_for_llm = scraper.extract_article_content(html)
+            if html:
+                page_date_obj = scraper.extract_download_page_date(html)
+                if page_date_obj:
+                    record_data['page_date'] = page_date_obj.strftime("%Y-%m-%d")
+                    if datetime.now() - page_date_obj <= timedelta(days=recency_threshold):
+                        record_data['is_new'] = 'yes'
+            
+            if record_data['is_new'] == 'yes':
+                  logging.info("New document found. Proceeding to download and analyze file type.")
+                  doc_data = scraper.download_and_extract_document_text(session, url)
+                  record_data['filetype'] = doc_data.get("filetype")
+                  content_for_llm = doc_data.get("content_for_llm")
+        else:
+            logging.info("URL identified as a standard page. Using article workflow.")
+            record_data['filetype'] = 'HTML'
+            html = scraper.fetch_page(session, url)
+            
+            if html:
+                # --- UPDATED DATE LOGIC ---
+                date_info = scraper.find_best_date_on_page(html)
+                posting_date = date_info.get('posting_date')
+                meeting_date = date_info.get('meeting_date')
+                
+                # Get yesterday's date, respecting the target_date we are running for
+                yesterday = (target_date_obj - timedelta(days=1)).date()
+
+                if meeting_date:
+                    logging.info(f"Meeting date found: {meeting_date.strftime('%Y-%m-%d')}")
+                    record_data['page_date'] = meeting_date.strftime("%Y-%m-%d")
+                    # Check if meeting is yesterday, today, or in the future
+                    if meeting_date.date() >= yesterday:
+                        record_data['is_new'] = 'yes'
+                        logging.info("New meeting announcement found based on event date.")
+                    else:
+                        record_data['is_new'] = 'maybe' # It's a past meeting
+                        logging.info("Past meeting page found. Flagging as 'maybe' for LLM classification (Meeting Materials).")
+                
+                elif posting_date:
+                    logging.info(f"Posting date found: {posting_date.strftime('%Y-%m-%d')}")
+                    record_data['page_date'] = posting_date.strftime("%Y-%m-%d")
+                    # Check if posting date is within the recency threshold of *today*
+                    if (datetime.now() - posting_date) <= timedelta(days=recency_threshold):
+                        record_data['is_new'] = 'yes'
+                        logging.info("New article found based on posting date.")
+                    else:
+                        record_data['is_new'] = 'maybe' # It's an old article
+                
+                else:
+                    record_data['is_new'] = 'maybe'
+                    logging.info("Page has no discernible date. Flagging as 'maybe'.")
+                
+                if record_data['is_new'] in ['yes', 'maybe']:
+                    content_for_llm = scraper.extract_article_content(html)
+            
+    except requests.exceptions.HTTPError as e:
+        if "404 Client Error" in str(e):
+            # Check if the error message contains the pattern indicating an unpublished page
+            if "---unpublished" in str(e):
+                logging.warning(f"URL resulted in 404 Unpublished error: {url}. Recording status.")
+                record_data['extracted_text'] = "PAGE STATUS: UNPUBLISHED/REMOVED"
+                record_data['is_new'] = 'yes' # Treat as "new" deletion/change for reporting
+                record_data['category'] = "Removed/Unpublished"
+                return record_data, None # Return the record, no content for LLM
+            else:
+                logging.error(f"Error fetching URL {url}: {e}")
+        else:
+            raise # Re-raise all other HTTP errors (like 403)
     
     # --- UPGRADE: Store the extracted text in the record for potential retries. ---
     record_data['extracted_text'] = content_for_llm
@@ -202,6 +229,12 @@ Examples of use:
   - Run a quick test for a specific date's sitemap:
     python main.py --date 2025-10-14 --test
 
+  - **NEW: Retry scraping for missing content:**
+    python main.py --date 2025-10-14 --retry
+
+  - Re-run LLM analysis on records that previously failed:
+    python main.py --date 2025-10-14 --retry-llm
+
   - Update an existing run for a specific date with only the latest news API data:
     python main.py --date 2025-10-14 --news-only
 """
@@ -214,8 +247,8 @@ Examples of use:
     # Special Modes
     mode_group = parser.add_argument_group('Special Modes (use one at a time with --date)')
     mode_group.add_argument("--test", action="store_true", help="Run in test mode: process first 25 URLs and use testing.db.")
-    mode_group.add_argument("--retry", nargs='?', const=True, default=False, 
-                        help="Run in scraping retry mode for URLs that failed with a 403 error in a previous run.")
+    mode_group.add_argument("--retry", action="store_true", 
+                        help="Run in scraping retry mode for URLs that are missing data in the 'extracted_text' column.")
     mode_group.add_argument("--retry_llm", action="store_true", help="Re-run LLM analysis on records that previously failed (e.g., due to API errors).")
     mode_group.add_argument("--news-only", action="store_true", help="Only fetch data from the /news API to update a day's run, skipping the sitemap.")
     
@@ -233,17 +266,18 @@ Examples of use:
             logging.critical(f"Invalid date format: '{args.date}'. Please use YYYY-MM-DD.")
             return
     else:
-        if args.retry is True or args.retry_llm or args.news_only:
+        if args.retry or args.retry_llm or args.news_only:
             logging.critical("Retry and news-only modes require a specific date. Please use the --date flag.")
             return
         yesterday = datetime.now() - timedelta(days=1)
         target_date_obj = yesterday
         csv_date_str = yesterday.strftime("%Y-%m-%d")
 
-    is_manual_retry = (args.retry is True)
-    setup_main_logging(args.test, csv_date_str, is_manual_retry, args.retry_llm)
+    # is_scraping_retry tracks the new, database-driven retry mode
+    is_scraping_retry = args.retry 
+    setup_main_logging(args.test, csv_date_str, is_scraping_retry, args.retry_llm)
 
-    if args.news_only and (is_manual_retry or args.retry_llm):
+    if args.news_only and (is_scraping_retry or args.retry_llm):
         logging.critical("--news-only cannot be used with --retry or --retry_llm modes.")
         return
     
@@ -254,7 +288,7 @@ Examples of use:
     if not conn: return
     database.create_daily_table(conn, table_name)
     
-    # --- UPGRADE: New execution path for the --retry_llm feature. ---
+    # --- LLM-Retry Execution Path (Unchanged) ---
     if args.retry_llm:
         logging.info("--- Starting Agent in LLM-Retry Mode ---")
         records_to_retry = database.fetch_records_for_llm_retry(conn, table_name)
@@ -268,7 +302,7 @@ Examples of use:
             for r in records_to_retry
         ]
         
-        summary_results = llm_handler.get_batch_summaries(llm_batch)
+        summary_results = llm_handler.get_batch_summaries(llm_batch, db_connection=conn, table_name=table_name)
         
         # Create a map of URL -> ID for efficient updates
         url_to_id_map = {r['url']: r['id'] for r in records_to_retry}
@@ -292,10 +326,10 @@ Examples of use:
         if conn: conn.close()
         return # End execution for this mode
 
-    # --- Standard Execution Path (Scraping) ---
+    # --- Standard/Scraping Retry Execution Path (Scraping) ---
     logging.info("--- Starting Mass.gov News Lead Agent ---")
     if args.test: logging.info("--- RUNNING IN TEST MODE ---")
-    if is_manual_retry: logging.info("--- RUNNING IN AGGRESSIVE RETRY MODE ---")
+    if is_scraping_retry: logging.info("--- RUNNING IN SCRAPING RETRY MODE (Missing Extracted Text) ---")
     if args.news_only: logging.info("--- RUNNING IN NEWS-ONLY MODE ---")
 
 
@@ -304,67 +338,90 @@ Examples of use:
     if not args.news_only:
         logging.info("--- Processing URLs from Sitemap ---")
         llm_batch = []
-        processed_records = []
+        # processed_records list is now only used for records inserted/updated in this run
+        processed_records = [] 
         recency_threshold = agent_config.get('recency_threshold_days', 2)
 
-        if is_manual_retry:
-            retry_log_file = os.path.join('logs', f"{csv_date_str}_retries.log")
-            # (This mode processes sequentially and is less likely to hit TPM limits, so we keep the end-of-run batch)
-            # ... retry logic ...
+        if is_scraping_retry:
+            # --- NEW LOGIC: Fetch URLs from DB where extracted_text is NULL/'' ---
+            daily_urls = database.fetch_urls_for_scraping_retry(conn, table_name)
+            total_urls = len(daily_urls)
+            if total_urls == 0:
+                logging.info("Scraping retry mode finished: No URLs found with missing extracted text.")
+                if conn: conn.close()
+                return # Exit early
+            logging.info(f"Loaded {total_urls} URLs for reprocessing from database.")
         else: # Normal or Test run
             csv_url = agent_config['github_csv_url_format'].format(date=csv_date_str)
             try:
                 daily_df = pd.read_csv(csv_url, names=['loc', 'lastmod'], header=0)
                 if args.test: daily_df = daily_df.head(25)
-                logging.info(f"Loaded {len(daily_df)} URLs for processing from sitemap.")
+                # Convert DataFrame to a list of dicts for unified processing structure
+                daily_urls = daily_df[['loc', 'lastmod']].rename(columns={'loc': 'url', 'lastmod': 'lastmodified'}).to_dict('records')
+                total_urls = len(daily_urls)
+                logging.info(f"Loaded {total_urls} URLs for processing from sitemap.")
             except Exception as e:
                 logging.error(f"Failed to fetch or read CSV from {csv_url}. Error: {e}")
                 if conn: conn.close()
                 return
                 
-            # --- UPGRADE: Logic for incremental batching. ---
-            total_urls = len(daily_df)
-            # Define checkpoints at 25%, 50%, and 75%
-            checkpoints = {int(total_urls * p) for p in [0.25, 0.5, 0.75]}
+        # Define checkpoints at 25%, 50%, and 75% for incremental LLM submission
+        checkpoints = {int(total_urls * p) for p in [0.25, 0.5, 0.75]}
 
-            for index, row in daily_df.iterrows():
-                url, lastmodified = str(row['loc']).strip(), str(row['lastmod']).strip()
+        for index, row in enumerate(daily_urls):
+            url = str(row['url']).strip()
+            lastmodified = str(row['lastmodified']).strip()
 
-                logging.info(f"Processing URL ({index + 1}/{total_urls}): {url}")
-                if database.check_if_url_exists(conn, table_name, url):
-                    logging.warning(f"URL already processed. Skipping.")
-                    continue
+            logging.info(f"Processing URL ({index + 1}/{total_urls}): {url}")
+            
+            # In normal mode, we skip if the URL is already processed.
+            # In retry mode, we know the URL exists and is missing text, so we don't check.
+            if not is_scraping_retry and database.check_if_url_exists(conn, table_name, url):
+                logging.warning(f"URL already processed. Skipping.")
+                continue
 
-                try:
-                    time.sleep(random.uniform(agent_config['rate_limit_min'], agent_config['rate_limit_max']))
-                    # --- Pass target_date_obj to process_url ---
-                    record_data, content_for_llm = process_url(scraping_session, url, lastmodified, recency_threshold, target_date_obj)
-                    if content_for_llm:
+            try:
+                time.sleep(random.uniform(agent_config['rate_limit_min'], agent_config['rate_limit_max']))
+                
+                record_data, content_for_llm = process_url(scraping_session, url, lastmodified, recency_threshold, target_date_obj)
+                
+                # --- MODIFIED: Skip LLM batching in scraping retry mode ---
+                if not is_scraping_retry: 
+                    if content_for_llm and record_data['is_new'] in ['yes', 'maybe']:
                         llm_batch.append({'url': url, 'content': content_for_llm, 'is_maybe': record_data['is_new'] == 'maybe'})
-                    processed_records.append(record_data)
+                
+                # We always add the record to processed_records if it was scraped, even if extraction failed.
+                processed_records.append(record_data)
 
-                except scraper.Scraper403Error:
-                    logging.error(f"403 Forbidden error for {url}. Logging for retry.")
-                    log_retry_url(url, csv_date_str)
-                except Exception as e:
-                    logging.error(f"An unexpected error occurred while processing {url}: {e}", exc_info=True)
+            except scraper.Scraper403Error:
+                logging.error(f"403 Forbidden error for {url}. Logging for retry in case DB update fails.")
+                # Log to file, even though main --retry is now DB driven, to capture failed retries
+                log_retry_url(url, csv_date_str) 
+            except Exception as e:
+                logging.error(f"An unexpected error occurred while processing {url}: {e}", exc_info=True)
 
-                # --- UPGRADE: Check if we have reached a progress checkpoint. ---
-                if (index + 1) in checkpoints:
-                    submit_llm_batch(llm_batch, processed_records)
+            # Check if we have reached a progress checkpoint (only in non-retry mode).
+            if not is_scraping_retry and (index + 1) in checkpoints:
+                submit_llm_batch(llm_batch, processed_records)
 
-        # --- UPGRADE: Process the final batch after the loop completes. ---
-        # This handles the last 25% of items and any remaining items in manual retry mode.
-        submit_llm_batch(llm_batch, processed_records)
+        # Process the final batch after the loop completes (only in non-retry mode).
+        if not is_scraping_retry:
+            submit_llm_batch(llm_batch, processed_records)
         
+        # Insert or Update the records
         for record in processed_records:
-            database.insert_record(conn, table_name, record)
-        logging.info(f"Completed processing sitemap URLs. {len(processed_records)} records saved to the database.")
+            if is_scraping_retry:
+                # If in retry mode, update the existing record with new scraped data
+                database.update_scraped_record(conn, table_name, record)
+            else:
+                # If in normal mode, attempt to insert
+                database.insert_record(conn, table_name, record)
+        
+        logging.info(f"Completed processing sitemap URLs. {len(processed_records)} records saved/updated in the database.")
     else:
         logging.info("--- Skipping Sitemap Processing (--news-only flag detected) ---")
 
-
-    # --- NEW: Process Press Releases from the News API ---
+    # --- Process Press Releases from the News API (Unchanged) ---
     logging.info("--- Processing Press Releases from News API ---")
     press_releases = scraper.fetch_press_releases(scraping_session)
     if press_releases:
@@ -426,9 +483,10 @@ Examples of use:
             except Exception as e:
                 logging.error(f"An unexpected error occurred while processing press release item {item.get('url')}: {e}", exc_info=True)
         
-        if llm_batch_pr:
+        # --- MODIFIED: Skip LLM processing for press releases in scraping retry mode ---
+        if llm_batch_pr and not is_scraping_retry:
             logging.info(f"Submitting a batch of {len(llm_batch_pr)} press releases to the LLM for summary.")
-            summary_results = llm_handler.get_batch_summaries(llm_batch_pr)
+            summary_results = llm_handler.get_batch_summaries(llm_batch_pr, db_connection=conn, table_name=table_name)
             
             url_to_record_map_pr = {rec['url']: rec for rec in records_pr}
 
@@ -441,15 +499,25 @@ Examples of use:
             for record in records_pr:
                 database.insert_record(conn, table_name, record)
             logging.info(f"Completed processing press releases. {len(records_pr)} new records saved.")
+        elif records_pr and is_scraping_retry:
+             # In retry mode, we still save the newly scraped press releases, 
+             # but without LLM results, to the DB for later LLM retry.
+             for record in records_pr:
+                database.insert_record(conn, table_name, record)
+             logging.info(f"Completed processing press releases. {len(records_pr)} new records saved (LLM skipped).")
 
-    if not args.test:
+
+    # --- MODIFIED: Skip report generation when in scraping retry mode ---
+    if not args.test and not is_scraping_retry:
         report_records = database.fetch_new_and_maybe_records(conn, table_name)
         if report_records:
             report_generator.generate_report(report_records, csv_date_str)
         else:
             logging.warning("No new or potentially new items were found to generate a report.")
-    else:
+    elif args.test:
         logging.info("Skipping report generation in test mode.")
+    elif is_scraping_retry:
+        logging.info("Skipping report generation in scraping retry mode.")
 
     if conn: conn.close()
     logging.info("Database connection closed.")
