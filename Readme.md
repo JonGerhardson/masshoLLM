@@ -82,35 +82,46 @@ New functionality to exclude from sending to final briefing LLM pages that are n
 
 ### Running the Scraper
 
-```bash
-python main.py <date> --scrape
+The LLM got this section wrong lol. ```python main.py``` and then ```python report_extras/report_extras.py``` is theorhetically the whole process if nothing goes wrong. TYhings usually go wrong so see below or run ```main.py -h```
+
 ```
 
-The scraper will:
-- Crawl mass.gov for updated documents
-- Extract content from web pages
-- Store results in the database
+usage: main.py [-h] [--date DATE] [--test] [--retry] [--retry_llm] [--news-only]
 
-### LLM Processing
+A command-line agent to scrape, analyze, and report on updates from mass.gov.
 
-```bash
-python main.py <date> --llm
+options:
+  -h, --help   show this help message and exit
+
+Primary Operations:
+  --date DATE  Specify a date to process in YYYY-MM-DD format. Defaults to yesterday.
+
+Special Modes (use one at a time with --date):
+  --test       Run in test mode: process first 25 URLs and use testing.db.
+  --retry      Run in scraping retry mode for URLs that are missing data in the 'extracted_text' column.
+  --retry_llm  Re-run LLM analysis on records that previously failed (e.g., due to API errors).
+  --news-only  Only fetch data from the /news API to update a day's run, skipping the sitemap.
+
+Examples of use:
+  - Run for yesterday's date:
+    python main.py
+
+  - Run for a specific date:
+    python main.py --date 2025-10-14
+
+  - Run a quick test for a specific date's sitemap:
+    python main.py --date 2025-10-14 --test
+
+  - **NEW: Retry scraping for missing content:**
+    python main.py --date 2025-10-14 --retry
+
+  - Re-run LLM analysis on records that previously failed:
+    python main.py --date 2025-10-14 --retry-llm
+
+  - Update an existing run for a specific date with only the latest news API data:
+    python main.py --date 2025-10-14 --news-only
+
 ```
-
-This will:
-- Fetch content from the database
-- Process with LLM to categorize items
-- Update the database with categories and summaries
-
-### Briefing Generation
-
-```bash
-python main.py <date> --briefing
-```
-
-This will:
-- Generate a daily briefing from the categorized content
-
 ### Report Extras
 
 ```bash
