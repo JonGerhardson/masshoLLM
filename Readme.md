@@ -154,4 +154,4 @@ The application generates logs in the `logs` directory:
 
  "Commons Clause" License Condition v1.0 + Apache
 
- Commercial use here explicitly includes running this in a newsroom to find story leads, thanksn for understanding. Email jon.gerhardson@proton.me 
+ Commercial use here explicitly includes running this in a newsroom to find story leads, thanks for understanding. Email jon.gerhardson@proton.me 
