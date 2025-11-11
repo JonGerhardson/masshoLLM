@@ -82,7 +82,7 @@ New functionality to exclude from sending to final briefing LLM pages that are n
 
 ### Running the Scraper
 
-The LLM got this section wrong lol. ```python main.py``` and then ```python report_extras/report_extras.py``` is hypothetically the whole process if nothing goes wrong. TYhings usually go wrong so see below or run ```main.py -h```
+The LLM got this section wrong lol. ```python main.py``` and then ```python report_extras/report_extras.py``` is hypothetically the whole process if nothing goes wrong. Things usually go wrong so see below or run ```main.py -h```
 
 ```
 
